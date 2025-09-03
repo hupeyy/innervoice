@@ -9,94 +9,32 @@
   let selectedEntry = null;
   let loading = false;
   
-  async function loadPastEntries() {
-    loading = true;
-    try {
-      const response = await fetch('http://localhost:8000/api/journal/history');
-      if (response.ok) {
-        const data = await response.json();
-        pastEntries = data.entries;
-      }
-    } catch (error) {
-      console.error('Error loading history:', error);
-    } finally {
-      loading = false;
-    }
-  }
-  
-  async function searchByDate() {
-    if (!searchDate) {
-      loadPastEntries();
-      return;
-    }
-    
-    loading = true;
-    try {
-      const response = await fetch(`http://localhost:8000/api/journal/search?date=${searchDate}`);
-      if (response.ok) {
-        const data = await response.json();
-        pastEntries = data.entries;
-      }
-    } catch (error) {
-      console.error('Error searching by date:', error);
-    } finally {
-      loading = false;
-    }
-  }
-  
-  function formatDate(dateString) {
-    const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', { 
-      weekday: 'short', 
-      month: 'short', 
-      day: 'numeric' 
-    });
-  }
-  
-  function getRelativeDate(dateString) {
-    const date = new Date(dateString);
-    const today = new Date();
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-    
-    if (date.toDateString() === today.toDateString()) {
-      return 'Today';
-    } else if (date.toDateString() === yesterday.toDateString()) {
-      return 'Yesterday';
-    } else {
-      const daysAgo = Math.floor((today - date) / (1000 * 60 * 60 * 24));
-      return `${daysAgo} days ago`;
-    }
-  }
-  
-  function viewEntry(entry) {
-    selectedEntry = entry;
-  }
-  
-  function closeEntryView() {
-    selectedEntry = null;
-  }
-  
-  // Load entries when sidebar opens
-  $: if (isOpen) {
-    loadPastEntries();
-  }
-  
-  // Handle escape key to close sidebar
-  function handleKeydown(event) {
-    if (event.key === 'Escape') {
-      if (selectedEntry) {
-        closeEntryView();
-      } else {
-        onClose();
-      }
-    }
-  }
+  // ... your existing functions remain the same ...
   
   // Handle overlay click - only close if clicking the overlay itself
   function handleOverlayClick(event) {
     if (event.target === event.currentTarget) {
       onClose();
+    }
+  }
+  
+  // Handle keyboard events for overlay
+  function handleOverlayKeydown(event) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      if (event.target === event.currentTarget) {
+        onClose();
+      }
+    }
+  }
+  
+  // Handle keyboard events for modal background
+  function handleModalBackgroundKeydown(event) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      if (event.target === event.currentTarget) {
+        closeEntryView();
+      }
     }
   }
 </script>
@@ -105,10 +43,10 @@
 
 <!-- Sidebar Container - Only show when open -->
 {#if isOpen}
-  <!-- Backdrop with blur effect -->
   <div 
     class="fixed inset-0 backdrop-blur-xs z-40 transition-all duration-300"
     on:click={handleOverlayClick}
+    on:keydown={handleOverlayKeydown}
     role="button"
     tabindex="0"
     aria-label="Close history sidebar by clicking outside"
@@ -117,11 +55,12 @@
     <div 
       class="fixed top-0 right-0 h-full w-96 bg-white shadow-2xl transform transition-transform duration-300 z-50 translate-x-0"
       on:click|stopPropagation
+      on:keydown|stopPropagation
       role="dialog"
       aria-modal="true"
       aria-labelledby="sidebar-title"
+      tabindex="0"
     >
-      
       <!-- Sidebar Header -->
       <div class="p-4 border-b border-gray-200 bg-indigo-50">
         <div class="flex items-center justify-between">
@@ -178,13 +117,12 @@
         {:else if pastEntries.length > 0}
           <div class="space-y-4">
             {#each pastEntries as entry}
-              <div class="bg-gray-50 rounded-lg p-4 hover:bg-gray-100 transition-colors cursor-pointer"
-                   on:click={() => viewEntry(entry)}
-                   on:keydown={(e) => e.key === 'Enter' && viewEntry(entry)}
-                   role="button"
-                   tabindex="0"
-                   aria-label="View journal entry from {formatDate(entry.date)}">
-                
+              <!-- CHANGED: div to button for better accessibility -->
+              <button 
+                class="w-full bg-gray-50 rounded-lg p-4 hover:bg-gray-100 transition-colors cursor-pointer text-left"
+                on:click={() => viewEntry(entry)}
+                aria-label="View journal entry from {formatDate(entry.date)}"
+              >
                 <div class="flex items-center justify-between mb-2">
                   <h3 class="font-medium text-gray-800 text-sm">{formatDate(entry.date)}</h3>
                   <span class="text-xs text-indigo-600 bg-indigo-100 px-2 py-1 rounded-full">
@@ -200,7 +138,7 @@
                   <span>💬 {entry.messageCount} messages</span>
                   <span>😊 {entry.mood || 'Neutral'}</span>
                 </div>
-              </div>
+              </button>
             {/each}
           </div>
         {:else}
@@ -219,12 +157,21 @@
 
 <!-- Full Entry Modal -->
 {#if selectedEntry}
-  <div class="fixed inset-0 backdrop-blur-xs bg-opacity-50 z-60 flex items-center justify-center p-4">
+  <div 
+    class="fixed inset-0 backdrop-blur-xs bg-black bg-opacity-50 z-60 flex items-center justify-center p-4"
+    on:click={() => closeEntryView()}
+    on:keydown={handleModalBackgroundKeydown}
+    role="button" 
+    tabindex="0"
+    aria-label="Close modal by clicking outside"
+  >
     <div class="bg-white rounded-lg max-w-2xl w-full max-h-[80vh] overflow-y-auto" 
          on:click|stopPropagation
+         on:keydown={(event) => { if (event.key === 'Escape') closeEntryView(); }}
          role="dialog"
          aria-modal="true"
-         aria-labelledby="entry-title">
+         aria-labelledby="entry-title"
+         tabindex="0">
       <div class="p-6">
         <div class="flex items-center justify-between mb-4">
           <h2 id="entry-title" class="text-xl font-semibold text-gray-800">

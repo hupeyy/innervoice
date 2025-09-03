@@ -1,23 +1,69 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from datetime import datetime, timedelta
 import json
 import random
-
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+import os
+import hashlib
+import base64
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import unpad, pad
+from contextlib import asynccontextmanager
 
 # Enhanced in-memory storage
 conversations = []
 journal_entries = []
+
+SECRET_KEY = 'innervoice-encryption-key-2025'  # In production, use environment variable
+
+def decrypt_data(encrypted_data: str) -> dict:
+    """Decrypt data using AES decryption compatible with CryptoJS"""
+    try:
+        # Create key from secret
+        key = hashlib.sha256(SECRET_KEY.encode()).digest()[:32]
+        
+        # Decode the base64 encrypted data
+        encrypted_bytes = base64.b64decode(encrypted_data)
+        
+        # Extract IV (first 16 bytes) and ciphertext
+        iv = encrypted_bytes[:16]
+        ciphertext = encrypted_bytes[16:]
+        
+        # Decrypt using AES CBC mode
+        cipher = AES.new(key, AES.MODE_CBC, iv)
+        decrypted_padded = cipher.decrypt(ciphertext)
+        
+        # Remove padding and parse JSON
+        decrypted_text = unpad(decrypted_padded, 16).decode('utf-8')
+        return json.loads(decrypted_text)
+        
+    except Exception as e:
+        raise ValueError(f"Decryption failed: {str(e)}")
+
+def encrypt_data(data: dict) -> str:
+    """Encrypt data for sending back to frontend"""
+    try:
+        # Create key from secret
+        key = hashlib.sha256(SECRET_KEY.encode()).digest()[:32]
+        
+        # Generate random IV
+        iv = os.urandom(16)
+        
+        # Encrypt data
+        cipher = AES.new(key, AES.MODE_CBC, iv)
+        json_data = json.dumps(data).encode('utf-8')
+        
+        # Pad data and encrypt
+        padded_data = pad(json_data, 16)
+        encrypted_data = cipher.encrypt(padded_data)
+        
+        # Combine IV and encrypted data, then base64 encode
+        result = base64.b64encode(iv + encrypted_data).decode('utf-8')
+        return result
+        
+    except Exception as e:
+        raise ValueError(f"Encryption failed: {str(e)}")
 
 # Generate some sample data for demo
 def generate_sample_data():
@@ -44,23 +90,60 @@ def generate_sample_data():
         ]
         journal_entries.extend(sample_entries)
 
-# ADD THIS: Initialize sample data on startup
-@app.on_event("startup")
-async def startup_event():
+# Initialize sample data on startup
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup code
     generate_sample_data()
-    print(f"Initialized {len(journal_entries)} sample journal entries")
+    print(f"Initialized {len(journal_entries)} sample journal entries with encryption enabled")
+    yield
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.post("/api/chat")
 async def chat(request_data: dict):
-    """Handle chat messages and generate AI responses"""
+    """Handle encrypted chat messages and generate AI responses"""
     
-    message = request_data.get("message", "")
+    # DEBUG: Log what we receive
+    print("=== INCOMING REQUEST DEBUG ===")
+    print(f"Request keys: {list(request_data.keys())}")
+    print(f"Request data: {request_data}")
+    
+    try:
+        # Check if data is encrypted
+        if "encrypted_data" in request_data:
+            print("Found encrypted_data field")
+            encrypted_message = request_data.get("encrypted_data", "")
+            print(f"Encrypted message length: {len(encrypted_message)}")
+            decrypted_data = decrypt_data(encrypted_message)
+            message = decrypted_data.get("message", "")
+        else:
+            print("No encrypted_data field, using fallback")
+            message = request_data.get("message", "")
+        
+        print(f"Final message: {message}")
+        
+    except ValueError as e:
+        print(f"DECRYPTION ERROR: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Decryption error: {str(e)}")
+    except Exception as e:
+        print(f"UNEXPECTED ERROR: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Request processing error: {str(e)}")
     
     # Store user message
     conversations.append({
         "text": message,
         "sender": "user",
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
+        "encrypted": True
     })
     
     # Contextual AI responses for InnerVoice
@@ -81,13 +164,27 @@ async def chat(request_data: dict):
     conversations.append({
         "text": response_text,
         "sender": "ai",
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
+        "encrypted": True
     })
     
-    return {
-        "response": response_text,
-        "timestamp": datetime.now().isoformat()
-    }
+    # Encrypt response before sending back
+    try:
+        if "encrypted_data" in request_data:
+            encrypted_response = encrypt_data({
+                "response": response_text,
+                "timestamp": datetime.now().isoformat()
+            })
+            return {"encrypted_data": encrypted_response}
+        else:
+            # Fallback for non-encrypted requests
+            return {
+                "response": response_text,
+                "timestamp": datetime.now().isoformat()
+            }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=f"Response encryption error: {str(e)}")
 
 @app.post("/api/journal/generate")
 async def generate_journal():
@@ -131,7 +228,7 @@ async def generate_journal():
         "date": datetime.now().isoformat(),
         "content": journal_entry,
         "messageCount": len(user_messages),
-        "mood": "Reflective"  # Simple mood detection could be added here
+        "mood": "Reflective"
     }
     
     # Remove existing today entry and add new one
@@ -143,8 +240,6 @@ async def generate_journal():
 @app.get("/api/journal/history")
 async def get_journal_history():
     """Get the last 5 days of journal entries"""
-    # Removed generate_sample_data() call from here
-    
     # Sort by date (newest first) and return last 5 days
     sorted_entries = sorted(journal_entries, key=lambda x: x["date"], reverse=True)
     return {"entries": sorted_entries[:5]}
@@ -152,8 +247,6 @@ async def get_journal_history():
 @app.get("/api/journal/search")
 async def search_journal_by_date(date: str = Query(...)):
     """Search journal entries by date"""
-    # Removed generate_sample_data() call from here
-    
     # Filter entries by date
     filtered_entries = [
         entry for entry in journal_entries 

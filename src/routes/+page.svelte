@@ -1,6 +1,8 @@
 <script>
   import { onMount, tick } from 'svelte';
   import HistorySidebar from '$lib/components/HistorySidebar.svelte';
+  import VoiceInput from '$lib/components/VoiceInput.svelte';
+  import CryptoJS from 'crypto-js';
   
   let messages = [];
   let newMessage = '';
@@ -9,6 +11,73 @@
   let journalEntry = '';
   let showHistory = false;
   let textareaElement; // Reference to textarea
+  let encryptionEnabled = true; // Toggle for encryption
+  let isVoiceInputActive = false; // Track voice input state
+  
+  const SECRET_KEY = 'innervoice-encryption-key-2025'; // Same as backend
+  
+  // Updated encryption functions in +page.svelte
+  function encryptData(data) {
+    try {
+      // Create a proper key
+      const key = CryptoJS.SHA256(SECRET_KEY);
+      
+      // Generate random IV
+      const iv = CryptoJS.lib.WordArray.random(16);
+      
+      // Encrypt with explicit IV and mode
+      const encrypted = CryptoJS.AES.encrypt(JSON.stringify(data), key, {
+        iv: iv,
+        mode: CryptoJS.mode.CBC,
+        padding: CryptoJS.pad.Pkcs7
+      });
+      
+      // Combine IV and encrypted data
+      const combined = iv.concat(encrypted.ciphertext);
+      return CryptoJS.enc.Base64.stringify(combined);
+      
+    } catch (error) {
+      console.error('Encryption failed:', error);
+      throw new Error('Failed to encrypt data');
+    }
+  }
+
+  function decryptData(encryptedData) {
+    try {
+      const key = CryptoJS.SHA256(SECRET_KEY);
+      
+      // Parse the combined data
+      const combined = CryptoJS.enc.Base64.parse(encryptedData);
+      
+      // Extract IV (first 16 bytes) and ciphertext
+      const iv = CryptoJS.lib.WordArray.create(combined.words.slice(0, 4), 16);
+      const ciphertext = CryptoJS.lib.WordArray.create(combined.words.slice(4));
+      
+      // Create cipher params
+      const cipherParams = CryptoJS.lib.CipherParams.create({
+        ciphertext: ciphertext
+      });
+      
+      // Decrypt
+      const decrypted = CryptoJS.AES.decrypt(cipherParams, key, {
+        iv: iv,
+        mode: CryptoJS.mode.CBC,
+        padding: CryptoJS.pad.Pkcs7
+      });
+      
+      return JSON.parse(decrypted.toString(CryptoJS.enc.Utf8));
+      
+    } catch (error) {
+      console.error('Decryption failed:', error);
+      throw new Error('Failed to decrypt data');
+    }
+  }
+
+  // Handle voice input transcript
+  function handleVoiceTranscript(transcript) {
+    newMessage = transcript;
+    autoResize();
+  }
   
   // Auto-resize functionality
   function autoResize() {
@@ -34,7 +103,7 @@
   async function sendMessage() {
     if (!newMessage.trim()) return;
     
-    // Add user message
+    // Add user message (store plain text locally for UI)
     messages = [...messages, { 
       text: newMessage, 
       sender: 'user', 
@@ -50,12 +119,23 @@
     autoResize();
     
     try {
+      let requestBody;
+      
+      if (encryptionEnabled) {
+        // Encrypt the message before sending
+        const encryptedMessage = encryptData({ message: userInput });
+        requestBody = { encrypted_data: encryptedMessage };
+      } else {
+        // Fallback for non-encrypted requests
+        requestBody = { message: userInput };
+      }
+      
       const response = await fetch('http://localhost:8000/api/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ message: userInput })
+        body: JSON.stringify(requestBody)
       });
       
       if (!response.ok) {
@@ -63,11 +143,23 @@
       }
       
       const data = await response.json();
+      let responseText, responseTimestamp;
+      
+      if (encryptionEnabled && data.encrypted_data) {
+        // Decrypt the response
+        const decryptedResponse = decryptData(data.encrypted_data);
+        responseText = decryptedResponse.response;
+        responseTimestamp = new Date(decryptedResponse.timestamp);
+      } else {
+        // Handle non-encrypted response
+        responseText = data.response;
+        responseTimestamp = new Date(data.timestamp);
+      }
       
       messages = [...messages, { 
-        text: data.response, 
+        text: responseText, 
         sender: 'ai', 
-        timestamp: new Date(data.timestamp) 
+        timestamp: responseTimestamp 
       }];
       
       // Generate journal entry after each conversation
@@ -111,6 +203,10 @@
     showHistory = false;
   }
   
+  function toggleEncryption() {
+    encryptionEnabled = !encryptionEnabled;
+  }
+  
   onMount(() => {
     // Welcome message
     messages = [{ 
@@ -124,12 +220,31 @@
 <main class="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
   <header class="p-4 text-center">
     <div class="flex items-center justify-between max-w-2xl mx-auto">
-      <div></div>
+      <div class="flex items-center space-x-2">
+        <!-- Encryption Status Indicator -->
+        <div class="flex items-center space-x-2">
+          <button 
+            on:click={toggleEncryption}
+            class="flex items-center space-x-1 px-2 py-1 rounded-full text-xs {
+              encryptionEnabled 
+                ? 'bg-green-100 text-green-800 hover:bg-green-200' 
+                : 'bg-red-100 text-red-800 hover:bg-red-200'
+            } transition-colors"
+            title="{encryptionEnabled ? 'Encryption enabled' : 'Encryption disabled'}"
+            aria-label="{encryptionEnabled ? 'Disable encryption' : 'Enable encryption'}"
+          >
+            <span class="text-sm">{encryptionEnabled ? '🔐' : '🔓'}</span>
+            <span>{encryptionEnabled ? 'Encrypted' : 'Plain'}</span>
+          </button>
+        </div>
+      </div>
+      
       <div>
         <h1 class="text-2xl font-bold text-indigo-800">InnerVoice</h1>
         <p class="text-indigo-600">Your conversational journal companion</p>
       </div>
       
+      <!-- History Toggle Button -->
       <button 
         on:click={toggleHistory}
         class="p-2 text-indigo-600 hover:text-indigo-800 hover:bg-indigo-100 rounded-full transition-colors"
@@ -189,7 +304,12 @@
                 : 'bg-white text-gray-800 shadow-md'
             }"
             aria-label="{message.sender === 'user' ? 'Your message' : 'AI response'}">
-              {message.text.trim()}
+              <div class="flex items-start justify-between">
+                <span class="flex-1">{message.text.trim()}</span>
+                {#if encryptionEnabled}
+                  <span class="ml-2 text-xs opacity-50" title="Message encrypted">🔐</span>
+                {/if}
+              </div>
             </div>
           </div>
         {/each}
@@ -207,7 +327,7 @@
         {/if}
       </div>
       
-      <!-- Enhanced Multi-line Input Form -->
+      <!-- Enhanced Multi-line Input Form with Voice Input -->
       <form on:submit|preventDefault={sendMessage} class="flex gap-3 items-end">
         <div class="flex-1 relative">
           <textarea 
@@ -222,6 +342,12 @@
             aria-label="Type your message to InnerVoice"
           ></textarea>
         </div>
+        
+        <!-- Voice Input Button -->
+        <VoiceInput 
+          onTranscript={handleVoiceTranscript}
+          isDisabled={isTyping}
+        />
         
         <button 
           type="submit" 
@@ -247,7 +373,7 @@
           <div class="prose prose-indigo max-w-none">
             <div class="bg-amber-50 border-l-4 border-amber-400 p-4 mb-4">
               <p class="text-sm text-amber-700">
-                ✨ This entry was automatically generated from your conversation with InnerVoice
+                ✨ This entry was automatically generated from your encrypted conversation with InnerVoice
               </p>
             </div>
             
@@ -271,6 +397,7 @@
         {/if}
       </div>
     {/if}
+    
   </div>
 </main>
 
@@ -287,17 +414,16 @@
     min-width: 40px;
     padding: 12px 16px;
     border-radius: 1.5rem;
-    white-space: pre-wrap; /* Preserve line breaks and wrap text */
-    overflow-wrap: anywhere; /* Break anywhere including punctuation */
-    word-wrap: break-word; /* Fallback for older browsers */
-    word-break: normal; /* Don't break words aggressively */
-    hyphens: none; /* Disable auto hyphenation */
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-wrap: break-word;
+    word-break: normal;
+    hyphens: none;
     line-height: 1.4;
     text-decoration: none;
     outline: none;
     border: none;
   }
-
 
   /* Journal content styling */
   .journal-content {
@@ -306,19 +432,19 @@
     word-break: break-word;
     overflow-wrap: break-word;
     line-height: 1.6;
-    color: #374151; /* gray-700 */
+    color: #374151;
   }
 
   /* Auto-growing textarea styles */
   .message-input {
     width: 100%;
     min-height: 44px;
-    max-height: 120px; /* ~5 lines max */
+    max-height: 120px;
     padding: 12px 16px;
-    border: 2px solid #e0e7ff; /* indigo-200 */
+    border: 2px solid #e0e7ff;
     border-radius: 22px;
     font-family: inherit;
-    font-size: 16px;
+    font-size: 14px;
     line-height: 1.4;
     resize: none;
     overflow-y: auto;
@@ -328,8 +454,8 @@
     outline: none;
     
     /* Hide scrollbar for all browsers */
-    scrollbar-width: none; /* Firefox */
-    -ms-overflow-style: none; /* Internet Explorer 10+ */
+    scrollbar-width: none;
+    -ms-overflow-style: none;
   }
 
   /* Hide scrollbar for Webkit browsers (Chrome, Safari, Edge) */
@@ -338,7 +464,7 @@
   }
 
   .message-input:focus {
-    border-color: #6366f1; /* indigo-500 */
+    border-color: #6366f1;
     box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
   }
 
@@ -349,7 +475,7 @@
   }
 
   .message-input::placeholder {
-    color: #94a3b8; /* gray-400 */
+    color: #94a3b8;
     font-style: italic;
   }
 
@@ -357,7 +483,7 @@
   .send-button {
     width: 44px;
     height: 44px;
-    background-color: #6366f1; /* indigo-500 */
+    background-color: #6366f1;
     color: white;
     border: none;
     border-radius: 50%;
@@ -370,13 +496,13 @@
   }
 
   .send-button:hover:not(:disabled) {
-    background-color: #5338f3; /* indigo-600 */
+    background-color: #5338f3;
     transform: scale(1.05);
     box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
   }
 
   .send-button:disabled {
-    background-color: #cbd5e1; /* gray-300 */
+    background-color: #cbd5e1;
     cursor: not-allowed;
     transform: scale(1);
     box-shadow: none;
