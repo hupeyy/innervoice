@@ -7,13 +7,12 @@
         "dev": "concurrently -k -n \"🎨SVELTE,🐍PYTHON\" -c \"cyan.bold,green.bold\" \"npm run dev:frontend\" \"npm run dev:backend\"",
         "dev:frontend": "vite dev",
         "dev:backend": "powershell -ExecutionPolicy ByPass -File ./run_backend.ps1",
-        "py:install": "powershell -ExecutionPolicy ByPass -Command \"cd backend; pip install -r requirements.txt\"",
-        "py:setup": "powershell -ExecutionPolicy ByPass -Command \"cd backend; python -m venv venv; .\\venv\\Scripts\\Activate.ps1; pip install -r requirements.txt\"",
+        "py:setup": "powershell -ExecutionPolicy ByPass -Command \"cd backend; .\\setup_python.ps1\"",
+        "py:install": "powershell -ExecutionPolicy ByPass -Command \"cd backend; .\\venv\\Scripts\\pip.exe install -r requirements.txt\"",
+        "py:clean": "powershell -ExecutionPolicy ByPass -Command \"cd backend; Remove-Item -Recurse -Force venv -ErrorAction SilentlyContinue; Write-Host 'Cleaned Python environment'\"",
+        "py:freeze": "powershell -ExecutionPolicy ByPass -Command \"cd backend; .\\venv\\Scripts\\pip.exe freeze > requirements.txt\"",
         "build": "vite build",
-        "preview": "vite preview",
-        "prepare": "svelte-kit sync || echo ''",
-        "format": "prettier --write .",
-        "lint": "prettier --check ."
+        "preview": "vite preview"
     },
     "devDependencies": {
         "@sveltejs/adapter-auto": "^6.0.0",

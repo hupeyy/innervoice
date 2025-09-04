@@ -272,32 +272,38 @@
   {:else}
     <!-- Main Content Area -->
     <div class="flex-1 max-w-4xl mx-auto w-full p-4 flex flex-col main-content" 
-         style="height: calc(100vh - 200px);">
+        style="height: calc(100vh - 200px);">
       
       {#if activeTab === 'chat'}
-        <!-- Chat Messages Component -->
-        <ChatMessages 
-          {messages} 
-          {isTyping} 
-          {encryptionEnabled} 
-        />
-        
-        <!-- Show "More options" button for initial AI message -->
-        {#if messages.length === 1 && messages[0].sender === 'ai' && !showStarterOptions}
-          <div class="more-starters-container">
-            <button class="more-starters-btn" on:click={showMoreStarters}>
-              💭 Show more conversation starters
-            </button>
+        <div class="chat-container">
+          <!-- Chat Messages (scrollable area) -->
+          <div class="chat-messages-area">
+            <ChatMessages 
+              {messages} 
+              {isTyping} 
+              {encryptionEnabled} 
+            />
+            
+            <!-- Show "More options" button for initial AI message -->
+            {#if messages.length === 1 && messages[0].sender === 'ai' && !showStarterOptions}
+              <div class="more-starters-container">
+                <button class="more-starters-btn" on:click={showMoreStarters}>
+                  💭 Show more conversation starters
+                </button>
+              </div>
+            {/if}
           </div>
-        {/if}
-        
-        <!-- Chat Input Component -->
-        <ChatInput 
-          bind:message={newMessage}
-          {isTyping}
-          onSendMessage={sendMessage}
-          onVoiceTranscript={handleVoiceTranscript}
-        />
+          
+          <!-- Fixed Chat Input at Bottom -->
+          <div class="chat-input-fixed">
+            <ChatInput 
+              bind:message={newMessage}
+              {isTyping}
+              onSendMessage={sendMessage}
+              onVoiceTranscript={handleVoiceTranscript}
+            />
+          </div>
+        </div>
         
       {:else if activeTab === 'journal'}
         <!-- Journal View Component -->
@@ -312,14 +318,15 @@
         </div>
         
       {:else if activeTab === 'analysis'}
-        <!-- NEW: Analysis Tab Content -->
         <div class="analysis-section">
           <div class="analysis-header">
             <h2>📊 Emotional Insights & Analysis</h2>
             <p>Discover patterns in your emotional journey and gain insights into your mental well-being.</p>
           </div>
           
-          <SentimentDashboard journalEntries={allJournals} />
+          <div class="w-full mx-auto">
+            <SentimentDashboard journalEntries={allJournals} />
+          </div>
           
           <div class="analysis-tips">
             <div class="tip-card">
@@ -596,7 +603,7 @@
   }
 
   .tip-card {
-    background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+    background-color: white;
     border-radius: 12px;
     padding: 2rem;
     border: 1px solid #e2e8f0;
@@ -632,5 +639,54 @@
     .tip-card {
       padding: 1.5rem;
     }
+  }
+
+  .chat-container {
+    position: relative;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .chat-messages-area {
+    flex: 1;
+    overflow-y: auto;
+    padding-bottom: 80px; /* Space for fixed input */
+    max-height: calc(100vh - 280px); /* Adjust based on your layout */
+  }
+
+  .chat-input-fixed {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 100%;
+    max-width: 800px; /* Match your chat width */
+    z-index: 1000;
+    padding: 0 1rem;
+  }
+
+  .more-starters-container {
+    display: flex;
+    justify-content: center;
+    padding: 1rem 0;
+  }
+
+  .more-starters-btn {
+    background: rgba(255, 255, 255, 0.9);
+    color: #333;
+    border: none;
+    padding: 0.75rem 1.5rem;
+    border-radius: 25px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: all 0.2s ease;
+    backdrop-filter: blur(10px);
+  }
+
+  .more-starters-btn:hover {
+    background: rgba(255, 255, 255, 1);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
   }
 </style>

@@ -10,8 +10,8 @@
   let averageSentiment = 0;
   let moodStreak = 0;
   
-  // Calculate sentiment metrics when entries change
-  $: if (journalEntries) {
+  // FIXED: Watch BOTH journalEntries AND selectedTimeframe
+  $: if (journalEntries && selectedTimeframe) {
     calculateSentimentMetrics();
   }
   
@@ -78,31 +78,29 @@
   }
   
   function extractThemes(entries) {
-    // Extract common emotional themes from insights
     const themes = [];
     entries.forEach(entry => {
       if (entry.insights) {
         entry.insights.forEach(insight => {
-          if (insight.includes('work') || insight.includes('stress')) {
+          const lowerInsight = insight.toLowerCase();
+          if (lowerInsight.includes('work') || lowerInsight.includes('stress') || lowerInsight.includes('career')) {
             themes.push('Work & Productivity');
-          } else if (insight.includes('relationship') || insight.includes('family')) {
+          } else if (lowerInsight.includes('relationship') || lowerInsight.includes('family') || lowerInsight.includes('friend')) {
             themes.push('Relationships');
-          } else if (insight.includes('health') || insight.includes('exercise')) {
+          } else if (lowerInsight.includes('health') || lowerInsight.includes('exercise') || lowerInsight.includes('wellness')) {
             themes.push('Health & Wellness');
-          } else if (insight.includes('creative') || insight.includes('hobby')) {
+          } else if (lowerInsight.includes('creative') || lowerInsight.includes('hobby') || lowerInsight.includes('art')) {
             themes.push('Creativity & Hobbies');
           }
         });
       }
     });
     
-    // Count theme frequency
     const themeCount = themes.reduce((acc, theme) => {
       acc[theme] = (acc[theme] || 0) + 1;
       return acc;
     }, {});
     
-    // Return top 3 themes
     return Object.entries(themeCount)
       .sort(([,a], [,b]) => b - a)
       .slice(0, 3)
@@ -111,9 +109,9 @@
   
   function getMoodColor(mood) {
     switch (mood) {
-      case 'positive': return '#10b981'; // green
-      case 'negative': return '#f87171'; // red
-      default: return '#6b7280'; // gray
+      case 'positive': return '#10b981';
+      case 'negative': return '#f87171';
+      default: return '#6b7280';
     }
   }
   
@@ -124,6 +122,12 @@
       default: return '😐';
     }
   }
+  
+  function handleTimeframeChange(timeframe) {
+    console.log('Changing timeframe from', selectedTimeframe, 'to', timeframe);
+    selectedTimeframe = timeframe;
+    console.log('New timeframe set:', selectedTimeframe);
+  }
 </script>
 
 <div class="sentiment-dashboard">
@@ -133,19 +137,19 @@
     <div class="timeframe-selector">
       <button 
         class="timeframe-btn {selectedTimeframe === '7d' ? 'active' : ''}"
-        on:click={() => selectedTimeframe = '7d'}
+        on:click={() => handleTimeframeChange('7d')}
       >
         7 Days
       </button>
       <button 
         class="timeframe-btn {selectedTimeframe === '30d' ? 'active' : ''}"
-        on:click={() => selectedTimeframe = '30d'}
+        on:click={() => handleTimeframeChange('30d')}
       >
         30 Days
       </button>
       <button 
         class="timeframe-btn {selectedTimeframe === '90d' ? 'active' : ''}"
-        on:click={() => selectedTimeframe = '90d'}
+        on:click={() => handleTimeframeChange('90d')}
       >
         3 Months
       </button>
@@ -203,10 +207,10 @@
           <text x="30" y="105" font-size="10" fill="#6b7280" text-anchor="end">0.0</text>
           <text x="30" y="155" font-size="10" fill="#6b7280" text-anchor="end">-1.0</text>
           
-          <!-- Sentiment line -->
+          <!-- FIXED: Sentiment line with reversed data -->
           {#if sentimentData.length > 1}
             <polyline
-              points={sentimentData.map((point, i) => {
+              points={sentimentData.slice().reverse().map((point, i) => {
                 const x = 40 + (i * (320 / (sentimentData.length - 1)));
                 const y = 100 - (point.sentiment * 50);
                 return `${x},${y}`;
@@ -217,8 +221,8 @@
             />
           {/if}
           
-          <!-- Data points -->
-          {#each sentimentData as point, i}
+          <!-- FIXED: Data points with reversed data -->
+          {#each sentimentData.slice().reverse() as point, i}
             <circle
               cx={40 + (i * (320 / Math.max(sentimentData.length - 1, 1)))}
               cy={100 - (point.sentiment * 50)}
@@ -228,8 +232,8 @@
             />
           {/each}
           
-          <!-- X-axis labels -->
-          {#each sentimentData as point, i}
+          <!-- FIXED: X-axis labels with reversed data -->
+          {#each sentimentData.slice().reverse() as point, i}
             {#if i % Math.ceil(sentimentData.length / 5) === 0}
               <text
                 x={40 + (i * (320 / Math.max(sentimentData.length - 1, 1)))}
@@ -245,6 +249,7 @@
         </svg>
       </div>
     </div>
+
 
     <!-- Mood Distribution -->
     <div class="mood-section">

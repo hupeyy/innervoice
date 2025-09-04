@@ -7,6 +7,7 @@
   let journals = [];
   let loading = false;
   let searchQuery = '';
+  let searchDate = '';
   let selectedEntry = null;
   let showModal = false;
   
@@ -14,18 +15,55 @@
   let isEditingModalTitle = false;
   let editableModalTitle = '';
   
-  // Filtered journals based on search
+  // ✅ CORRECTED timezone-aware date matching function
+  function dateMatchesEntry(entryDateString, selectedDateString) {
+    if (!selectedDateString) return true;
+    
+    // Create the selected date in local timezone (no UTC conversion)
+    const selectedDate = new Date(selectedDateString + 'T00:00:00');
+    
+    // Parse the entry date (UTC timestamp)
+    const entryDate = new Date(entryDateString);
+    
+    // Get the date components in the user's local timezone
+    const selectedYear = selectedDate.getFullYear();
+    const selectedMonth = selectedDate.getMonth();
+    const selectedDay = selectedDate.getDate();
+    
+    // Get the entry date components in the user's local timezone
+    const entryYear = entryDate.getFullYear();
+    const entryMonth = entryDate.getMonth();  
+    const entryDay = entryDate.getDate();
+    
+    // Compare the date components
+    return selectedYear === entryYear && 
+           selectedMonth === entryMonth && 
+           selectedDay === entryDay;
+  }
+  
+  // ✅ CORRECTED display date (no timezone offset issues)
+  $: displaySearchDate = searchDate ? new Date(searchDate + 'T00:00:00').toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric'
+  }) : '';
+  
+  // Enhanced filtering with corrected timezone-aware date matching
   $: filteredJournals = journals.filter(entry => {
+    // Date filtering with timezone handling
+    if (searchDate && !dateMatchesEntry(entry.date, searchDate)) {
+      return false;
+    }
+    
+    // Text filtering (existing logic)
     if (!searchQuery) return true;
     
     const query = searchQuery.toLowerCase();
-    const entryDate = new Date(entry.date).toLocaleDateString().toLowerCase();
     const entryTitle = (entry.title || '').toLowerCase();
     const entrySummary = (entry.summary || '').toLowerCase();
     
-    return entryDate.includes(query) || 
-           entryTitle.includes(query) || 
-           entrySummary.includes(query);
+    return entryTitle.includes(query) || entrySummary.includes(query);
   });
   
   async function fetchJournalHistory() {
@@ -158,21 +196,41 @@
 </script>
 
 {#if isOpen}
-  <div class="sidebar-backdrop" on:click={onClose}>
-    <div class="sidebar" on:click|stopPropagation>
+  <div class="sidebar-backdrop" on:click={onClose} on:keydown={(e) => e.key === 'Escape' && onClose()} role="button" tabindex="0">
+    <div class="sidebar" on:click|stopPropagation on:keydown|stopPropagation role="dialog" aria-modal="true" tabindex="-1">
       <div class="sidebar-header">
         <h2 class="text-lg font-semibold text-indigo-800">Journal History</h2>
         <button on:click={onClose} class="close-button">×</button>
       </div>
       
-      <!-- Search Bar -->
-      <div class="search-container">
-        <input
-          type="text"
-          bind:value={searchQuery}
-          placeholder="Search by date or content..."
-          class="search-input"
-        />
+      <!-- Enhanced Search Section with Date Filter -->
+      <div class="search-section">
+        <div class="search-container">
+          <input
+            type="text"
+            bind:value={searchQuery}
+            placeholder="Search by title or content..."
+            class="search-input"
+          />
+        </div>
+        
+        <div class="date-filter-container">
+          <input
+            type="date"
+            bind:value={searchDate}
+            class="date-input"
+            title="Filter by date"
+          />
+          {#if searchDate}
+            <button 
+              class="clear-date-btn" 
+              on:click={() => searchDate = ''}
+              title="Clear date filter"
+            >
+              ×
+            </button>
+          {/if}
+        </div>
       </div>
       
       <div class="sidebar-content">
@@ -180,15 +238,34 @@
           <div class="loading">Loading your journals...</div>
         {:else if filteredJournals.length === 0}
           <div class="empty-state">
-            {#if searchQuery}
+            {#if searchQuery || searchDate}
               <div class="text-4xl mb-2">🔍</div>
-              <p class="text-gray-600">No entries found for "{searchQuery}"</p>
-              <button 
-                class="clear-search-btn" 
-                on:click={() => searchQuery = ''}
-              >
-                Clear search
-              </button>
+              <p class="text-gray-600">No entries found</p>
+              {#if searchQuery && searchDate}
+                <p class="text-sm text-gray-500 mb-3">for "{searchQuery}" on {displaySearchDate}</p>
+              {:else if searchQuery}
+                <p class="text-sm text-gray-500 mb-3">for "{searchQuery}"</p>
+              {:else if searchDate}
+                <p class="text-sm text-gray-500 mb-3">on {displaySearchDate}</p>
+              {/if}
+              <div class="filter-actions">
+                {#if searchQuery}
+                  <button 
+                    class="clear-search-btn" 
+                    on:click={() => searchQuery = ''}
+                  >
+                    Clear search
+                  </button>
+                {/if}
+                {#if searchDate}
+                  <button 
+                    class="clear-search-btn" 
+                    on:click={() => searchDate = ''}
+                  >
+                    Clear date
+                  </button>
+                {/if}
+              </div>
             {:else}
               <div class="text-4xl mb-2">📖</div>
               <p class="text-gray-600">No journal entries yet</p>
@@ -229,8 +306,8 @@
 
 <!-- Journal Entry Modal with Editable Title -->
 {#if showModal && selectedEntry}
-  <div class="modal-backdrop" on:click={handleModalBackdropClick}>
-    <div class="modal" on:click|stopPropagation>
+  <div class="modal-backdrop" on:click={handleModalBackdropClick} on:keydown={(e) => e.key === 'Escape' && closeModal()} role="dialog" aria-modal="true" tabindex="-1">
+    <div class="modal" role="document">
       <div class="modal-header">
         <!-- Editable Title in Modal -->
         <div class="modal-title-container">
@@ -244,16 +321,14 @@
               placeholder="Enter journal title..."
             />
           {:else}
-            <h2 
+            <button 
               class="modal-title-editable" 
               on:click={startEditingModalTitle}
-              role="button"
-              tabindex="0"
               on:keydown={(e) => e.key === 'Enter' && startEditingModalTitle()}
             >
               {selectedEntry.title || 'Untitled Entry'}
               <span class="modal-edit-icon">✏️</span>
-            </h2>
+            </button>
           {/if}
         </div>
         <button on:click={closeModal} class="modal-close-button">×</button>
@@ -309,7 +384,7 @@
 {/if}
 
 <style>
-  /* Existing sidebar styles... */
+  /* Sidebar styles */
   .sidebar-backdrop {
     position: fixed;
     top: 0;
@@ -357,9 +432,18 @@
     background: #e5e7eb;
   }
   
-  .search-container {
+  /* Enhanced search section */
+  .search-section {
     padding: 1rem;
     border-bottom: 1px solid #e5e7eb;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  
+  .search-container {
+    display: flex;
+    flex-direction: column;
   }
   
   .search-input {
@@ -374,6 +458,50 @@
     outline: none;
     border-color: #6366f1;
     box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.1);
+  }
+  
+  .date-filter-container {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+  }
+  
+  .date-input {
+    flex: 1;
+    padding: 0.5rem;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    font-size: 0.875rem;
+    color: #374151;
+    background: #f9fafb;
+  }
+  
+  .date-input:focus {
+    outline: none;
+    border-color: #6366f1;
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.1);
+    background: white;
+  }
+  
+  .clear-date-btn {
+    width: 28px;
+    height: 28px;
+    border: none;
+    background: #ef4444;
+    color: white;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1rem;
+    cursor: pointer;
+    transition: all 0.2s;
+    flex-shrink: 0;
+  }
+  
+  .clear-date-btn:hover {
+    background: #dc2626;
+    transform: scale(1.1);
   }
   
   .sidebar-content {
@@ -393,8 +521,14 @@
     padding: 3rem 1rem;
   }
   
-  .clear-search-btn {
+  .filter-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: center;
     margin-top: 1rem;
+  }
+  
+  .clear-search-btn {
     padding: 0.5rem 1rem;
     background: #6366f1;
     color: white;
@@ -402,6 +536,11 @@
     border-radius: 6px;
     cursor: pointer;
     font-size: 0.875rem;
+    transition: background 0.2s;
+  }
+  
+  .clear-search-btn:hover {
+    background: #4f46e5;
   }
   
   .journal-list {
@@ -656,5 +795,30 @@
     border-radius: 6px;
     color: #92400e;
     font-style: italic;
+  }
+  
+  /* Utility classes for text styling */
+  .text-4xl {
+    font-size: 2.25rem;
+  }
+  
+  .mb-2 {
+    margin-bottom: 0.5rem;
+  }
+  
+  .mb-3 {
+    margin-bottom: 0.75rem;
+  }
+  
+  .text-gray-600 {
+    color: #4b5563;
+  }
+  
+  .text-gray-500 {
+    color: #6b7280;
+  }
+  
+  .text-sm {
+    font-size: 0.875rem;
   }
 </style>
