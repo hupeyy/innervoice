@@ -5,8 +5,9 @@ from datetime import datetime
 import openai
 import os
 import random
-import re
 import json
+import sqlite3
+from typing import Optional, List, Dict, Any
 from dotenv import load_dotenv
 
 # Import sample data
@@ -19,18 +20,141 @@ openai.api_key = OPENAI_API_KEY
 
 # Global variables
 conversations = []
-journal_entries = []
 SECRET_KEY = 'innervoice-encryption-key-2025'
 MAX_INPUT_LENGTH = 1000
+DATABASE_PATH = "journal.db"
+
+# Database functions using built-in sqlite3
+def init_database():
+    """Initialize SQLite database with required tables"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS journal_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        insights TEXT NOT NULL,
+        sentiment_score REAL DEFAULT 0.0,
+        primary_theme TEXT DEFAULT 'Daily Life',
+        messages TEXT NOT NULL,
+        user_notes TEXT DEFAULT '',
+        mood TEXT DEFAULT 'Neutral'
+    )
+    ''')
+    
+    # Create index on date for faster queries
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_date ON journal_entries(date)')
+    
+    conn.commit()
+    conn.close()
+
+def get_db_connection():
+    """Get a database connection"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    conn.row_factory = sqlite3.Row  # This enables dict-like access to rows
+    return conn
+
+def load_sample_data_if_empty():
+    """Load sample data if database is empty"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT COUNT(*) FROM journal_entries")
+    count = cursor.fetchone()[0]
+    
+    if count == 0:
+        sample_entries = get_sample_journal_entries()
+        for entry_data in sample_entries:
+            cursor.execute('''
+            INSERT INTO journal_entries (date, title, summary, insights, sentiment_score, primary_theme, messages, user_notes, mood)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                entry_data["date"],
+                entry_data.get("title", "Journal Entry"),
+                entry_data["summary"],
+                json.dumps(entry_data["insights"]),
+                analyze_mood_sentiment(entry_data.get("mood", "")),
+                "Daily Life",
+                json.dumps(entry_data.get("messages", [])),
+                entry_data.get("userNotes", ""),
+                entry_data.get("mood", "Neutral")
+            ))
+        
+        conn.commit()
+        print(f"Loaded {len(sample_entries)} sample entries into database")
+    else:
+        print("Database already has entries")
+    
+    conn.close()
+
+# Enhanced sentiment analysis functions (same as before)
+def analyze_mood_sentiment(mood_text):
+    """Convert text mood to numeric sentiment score - Enhanced version"""
+    if not mood_text:
+        return 0.0
+    
+    mood = mood_text.lower()
+    
+    positive_keywords = [
+        'optimistic', 'grateful', 'energized', 'proud', 'accomplished', 
+        'excited', 'happy', 'joyful', 'confident', 'peaceful', 'hopeful',
+        'satisfied', 'content', 'motivated', 'inspired', 'blessed'
+    ]
+    negative_keywords = [
+        'anxious', 'nervous', 'hurt', 'frustrated', 'stressed', 'worried', 
+        'sad', 'angry', 'disappointed', 'overwhelmed', 'exhausted', 'lonely',
+        'confused', 'insecure', 'depressed', 'irritated'
+    ]
+    
+    positive_score = sum(1 for word in positive_keywords if word in mood)
+    negative_score = sum(1 for word in negative_keywords if word in mood)
+    
+    if positive_score > negative_score:
+        return min(0.8, 0.2 + (positive_score * 0.2))
+    elif negative_score > positive_score:
+        return max(-0.8, -0.2 - (negative_score * 0.2))
+    else:
+        return 0.1
+
+async def analyze_sentiment(text):
+    """Enhanced GPT-4 sentiment analysis with advanced fallback"""
+    try:
+        response = openai.chat.completions.create(
+            model="gpt-4",
+            messages=[{
+                "role": "system",
+                "content": """You are an expert at analyzing emotions in personal journal entries. Consider context, mixed emotions, personal growth language, and emotional complexity. Be precise with sentiment scoring."""
+            },
+            {
+                "role": "user", 
+                "content": f"""Analyze this journal entry's emotional sentiment on a scale from -1.0 to 1.0:
+
+"{text}"
+
+Consider: emotional trajectory, hope vs despair, self-awareness, growth vs rumination.
+
+Return ONLY JSON: {{"sentiment_score": 0.2, "primary_theme": "Personal Growth", "confidence": 0.85}}"""
+            }],
+            max_tokens=80,
+            temperature=0.1,
+        )
+        
+        result = json.loads(response.choices[0].message.content)
+        return result.get("sentiment_score", 0), result.get("primary_theme", "Daily Life")
+        
+    except Exception as e:
+        print(f"Enhanced sentiment analysis failed: {e}")
+        return analyze_mood_sentiment(text), "Daily Life"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Load sample data
-    global journal_entries
-    journal_entries.extend(get_sample_journal_entries())
-    print(f"Loaded {len(journal_entries)} sample journal entries")
+    # Initialize database and load sample data
+    init_database()
+    load_sample_data_if_empty()
     yield
-    # Shutdown
     print("Shutting down InnerVoice API")
 
 app = FastAPI(title="InnerVoice API", lifespan=lifespan)
@@ -44,7 +168,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Encryption functions using pycryptodome
+# Encryption functions (same as before)
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 from Crypto.Random import get_random_bytes
@@ -78,7 +202,7 @@ def decrypt_data(encrypted_data):
     except Exception as error:
         raise Exception('Failed to decrypt data')
 
-# Time-aware functions
+# Time-aware functions (same as before)
 def get_time_context():
     """Get contextual time of day"""
     hour = datetime.now().hour
@@ -102,22 +226,26 @@ def get_time_greeting():
     }
     return random.choice(greetings[time_context])
 
-# Build memory context from past journals
 def build_memory_context():
     """Extract key memories from recent journal entries for AI context"""
-    if not journal_entries:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT summary, insights FROM journal_entries ORDER BY date DESC LIMIT 5")
+    recent_entries = cursor.fetchall()
+    conn.close()
+    
+    if not recent_entries:
         return ""
     
     memories = []
-    recent_entries = journal_entries[:5]
-    
     for entry in recent_entries:
-        if entry.get("summary"):
-            memories.append(entry["summary"])
-        if entry.get("insights"):
-            for insight in entry["insights"][:2]:
-                if insight and len(insight) > 20:
-                    memories.append(insight)
+        if entry['summary']:
+            memories.append(entry['summary'])
+        insights = json.loads(entry['insights'])
+        for insight in insights[:2]:
+            if insight and len(insight) > 20:
+                memories.append(insight)
     
     if memories:
         memory_text = "\n- ".join(memories)
@@ -140,34 +268,7 @@ def _secure_response(request_data, text):
     except Exception:
         return response_payload
 
-# Sentiment analysis function
-async def analyze_sentiment(text):
-    """Analyze sentiment of journal text using OpenAI"""
-    try:
-        response = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{
-                "role": "user", 
-                "content": f"""Analyze the emotional sentiment of this journal entry and return a score between -1.0 (very negative) and 1.0 (very positive). 
-                
-                Also identify the primary emotional theme from these categories: Work & Productivity, Relationships, Health & Wellness, Creativity & Hobbies, Personal Growth, Daily Life.
-                
-                Text: "{text}"
-                
-                Respond with JSON format: {{"sentiment_score": 0.2, "primary_theme": "Work & Productivity"}}"""
-            }],
-            max_tokens=50,
-            temperature=0.3,
-        )
-        
-        result = json.loads(response.choices[0].message.content)
-        return result.get("sentiment_score", 0), result.get("primary_theme", "Daily Life")
-        
-    except Exception as e:
-        print(f"Sentiment analysis error: {e}")
-        return 0, "Daily Life"
-
-# Dynamic starter endpoints
+# API Endpoints
 @app.get("/api/conversation/starter")
 async def get_dynamic_starter():
     """Get single personalized conversation starter with time awareness"""
@@ -175,8 +276,15 @@ async def get_dynamic_starter():
     time_context = get_time_context()
     time_greeting = get_time_greeting()
     
+    # Check if there are any journal entries
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT summary, insights FROM journal_entries ORDER BY date DESC LIMIT 3")
+    recent_entries = cursor.fetchall()
+    conn.close()
+    
     # If no journal history, return time-appropriate welcome
-    if not journal_entries:
+    if not recent_entries:
         welcome_starters = [
             f"{time_greeting} I'm here to listen. How are you feeling?",
             f"{time_greeting} What's on your mind this {time_context}?",
@@ -186,17 +294,15 @@ async def get_dynamic_starter():
         return {"starter": random.choice(welcome_starters)}
     
     # Get recent context from journal entries
-    recent_entries = journal_entries[:3]
     context_text = ""
     for entry in recent_entries:
-        if entry.get("summary"):
+        if entry['summary']:
             context_text += f"Previous reflection: {entry['summary']}\n"
-        if entry.get("insights"):
-            for insight in entry["insights"][:1]:
-                context_text += f"Key insight: {insight}\n"
+        insights = json.loads(entry['insights'])
+        if insights:
+            context_text += f"Key insight: {insights[0]}\n"
     
     try:
-        # Generate contextual starter with OpenAI
         starter_prompt = f"""Create a warm, personalized conversation starter that:
 1. Includes an appropriate greeting for {time_context} time
 2. References their recent journal context naturally
@@ -207,11 +313,6 @@ Recent context:
 {context_text}
 
 Time context: It's {time_context} time.
-
-Examples:
-- "Good morning! I remember you were reflecting on work stress yesterday. How are you starting today?"
-- "Evening check-in! Last time you mentioned feeling energized after your walk. How did today go?"
-- "Good afternoon! You've been exploring work-life balance lately. What's been on your mind?"
 
 Generate one warm, contextual starter (1-2 sentences):"""
 
@@ -227,13 +328,16 @@ Generate one warm, contextual starter (1-2 sentences):"""
         
     except Exception as e:
         # Fallback with time awareness
-        last_entry = journal_entries[0]
-        fallback_starters = [
-            f"{time_greeting} I remember our last conversation about {last_entry.get('summary', 'your thoughts')}. How are things today?",
-            f"{time_greeting} Ready to continue your journaling journey? What's present for you this {time_context}?",
-            f"{time_greeting} How are you feeling compared to our last chat?"
-        ]
-        return {"starter": random.choice(fallback_starters)}
+        if recent_entries:
+            last_entry = recent_entries[0]
+            fallback_starters = [
+                f"{time_greeting} I remember our last conversation about {last_entry['summary'][:50]}. How are things today?",
+                f"{time_greeting} Ready to continue your journaling journey? What's present for you this {time_context}?",
+                f"{time_greeting} How are you feeling compared to our last chat?"
+            ]
+            return {"starter": random.choice(fallback_starters)}
+        else:
+            return {"starter": f"{time_greeting} I'm here to listen. How are you feeling?"}
 
 @app.get("/api/conversation/starters")
 async def get_starter_options():
@@ -242,8 +346,15 @@ async def get_starter_options():
     time_context = get_time_context()
     time_greeting = get_time_greeting()
     
+    # Check for journal history
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT summary, insights FROM journal_entries ORDER BY date DESC LIMIT 1")
+    recent_entry = cursor.fetchone()
+    conn.close()
+    
     # If no journal history
-    if not journal_entries:
+    if not recent_entry:
         base_starters = [
             {
                 "text": f"{time_greeting} How are you feeling right now?",
@@ -269,9 +380,8 @@ async def get_starter_options():
         return {"starters": base_starters}
     
     # With journal history - create contextual options
-    last_entry = journal_entries[0]
-    summary = last_entry.get("summary", "")
-    insights = last_entry.get("insights", [])
+    summary = recent_entry['summary']
+    insights = json.loads(recent_entry['insights'])
     
     contextual_starters = [
         {
@@ -449,35 +559,64 @@ async def generate_journal():
     except Exception:
         insights = ["Regular journaling helps process emotions and gain valuable perspective."]
 
-    # Analyze sentiment of the conversation
+    # Enhanced sentiment analysis
     user_text = " ".join([msg["text"] for msg in user_messages])
     sentiment_score, primary_theme = await analyze_sentiment(user_text)
 
-    # Create journal entry with sentiment data
-    journal_entry = {
-        "date": datetime.now().isoformat(),
-        "title": f"Journal Entry - {datetime.now().strftime('%B %d, %Y')}",
-        "summary": summary,
-        "insights": insights,
-        "sentimentScore": sentiment_score,
-        "primaryTheme": primary_theme,
-        "messages": [
+    # Create journal entry in database
+    now = datetime.now()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Remove existing entry for today if it exists
+    today_date = now.strftime("%Y-%m-%d")
+    cursor.execute("DELETE FROM journal_entries WHERE date LIKE ?", (f"{today_date}%",))
+    
+    # Insert new entry
+    cursor.execute('''
+    INSERT INTO journal_entries (date, title, summary, insights, sentiment_score, primary_theme, messages, user_notes, mood)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        now.isoformat(),
+        f"Journal Entry - {now.strftime('%B %d, %Y')}",
+        summary,
+        json.dumps(insights),
+        sentiment_score,
+        primary_theme,
+        json.dumps([
             {
                 "role": msg["sender"],
                 "text": msg["text"],
                 "timestamp": msg["timestamp"]
             } for msg in conversations
-        ],
-        "userNotes": "",
-        "mood": "Reflective"
+        ]),
+        "",
+        "Reflective"
+    ))
+    
+    entry_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+
+    return {
+        "journal": {
+            "date": now.isoformat(),
+            "title": f"Journal Entry - {now.strftime('%B %d, %Y')}",
+            "summary": summary,
+            "insights": insights,
+            "sentimentScore": sentiment_score,
+            "primaryTheme": primary_theme,
+            "messages": [
+                {
+                    "role": msg["sender"],
+                    "text": msg["text"],
+                    "timestamp": msg["timestamp"]
+                } for msg in conversations
+            ],
+            "userNotes": "",
+            "mood": "Reflective"
+        }
     }
-
-    # Store entry (replace today's if exists)
-    today_date = datetime.now().strftime("%Y-%m-%d")
-    journal_entries[:] = [entry for entry in journal_entries if not entry["date"].startswith(today_date)]
-    journal_entries.insert(0, journal_entry)
-
-    return {"journal": journal_entry}
 
 @app.patch("/api/journal/{journal_date}/title")
 async def update_journal_title(journal_date: str, request_data: dict):
@@ -487,25 +626,70 @@ async def update_journal_title(journal_date: str, request_data: dict):
     if not new_title:
         raise HTTPException(status_code=400, detail="Title cannot be empty")
     
-    # Find and update the journal entry
-    for entry in journal_entries:
-        if entry["date"].startswith(journal_date):
-            entry["title"] = new_title
-            return {"message": "Title updated successfully", "title": new_title}
+    conn = get_db_connection()
+    cursor = conn.cursor()
     
-    raise HTTPException(status_code=404, detail="Journal entry not found")
+    cursor.execute("UPDATE journal_entries SET title = ? WHERE date LIKE ?", (new_title, f"{journal_date}%"))
+    
+    if cursor.rowcount == 0:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Journal entry not found")
+    
+    conn.commit()
+    conn.close()
+    
+    return {"message": "Title updated successfully", "title": new_title}
 
 @app.get("/api/journal/all")
 async def get_all_journals():
     """Return all journal entries for history sidebar and sentiment analysis"""
-    return {"journals": journal_entries}
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT * FROM journal_entries ORDER BY date DESC")
+    entries = cursor.fetchall()
+    conn.close()
+    
+    journals = []
+    for entry in entries:
+        journals.append({
+            "date": entry['date'],
+            "title": entry['title'],
+            "summary": entry['summary'],
+            "insights": json.loads(entry['insights']),
+            "sentimentScore": entry['sentiment_score'],
+            "primaryTheme": entry['primary_theme'],
+            "messages": json.loads(entry['messages']),
+            "userNotes": entry['user_notes'],
+            "mood": entry['mood']
+        })
+    
+    return {"journals": journals}
 
 @app.get("/api/journal/{date}")
 async def get_journal_by_date(date: str):
     """Get a specific journal entry by date"""
-    for entry in journal_entries:
-        if entry["date"].startswith(date):
-            return {"journal": entry}
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT * FROM journal_entries WHERE date LIKE ?", (f"{date}%",))
+    entry = cursor.fetchone()
+    conn.close()
+    
+    if entry:
+        return {
+            "journal": {
+                "date": entry['date'],
+                "title": entry['title'],
+                "summary": entry['summary'],
+                "insights": json.loads(entry['insights']),
+                "sentimentScore": entry['sentiment_score'],
+                "primaryTheme": entry['primary_theme'],
+                "messages": json.loads(entry['messages']),
+                "userNotes": entry['user_notes'],
+                "mood": entry['mood']
+            }
+        }
     return {"journal": None}
 
 @app.patch("/api/journal/{journal_date}/notes")
@@ -513,18 +697,49 @@ async def update_journal_notes(journal_date: str, request_data: dict):
     """Update the notes of a specific journal entry"""
     notes = request_data.get("notes", "")
     
-    # Find and update the journal entry
-    for entry in journal_entries:
-        if entry["date"].startswith(journal_date):
-            entry["userNotes"] = notes
-            return {"message": "Notes updated successfully", "notes": notes}
+    conn = get_db_connection()
+    cursor = conn.cursor()
     
-    raise HTTPException(status_code=404, detail="Journal entry not found")
+    cursor.execute("UPDATE journal_entries SET user_notes = ? WHERE date LIKE ?", (notes, f"{journal_date}%"))
+    
+    if cursor.rowcount == 0:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Journal entry not found")
+    
+    conn.commit()
+    conn.close()
+    
+    return {"message": "Notes updated successfully", "notes": notes}
 
+@app.post("/api/journal/backfill-sentiment")
+async def backfill_sentiment():
+    """Add sentiment scores to existing entries that don't have them"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT id, mood FROM journal_entries WHERE sentiment_score = 0.0")
+    entries = cursor.fetchall()
+    
+    updated_count = 0
+    for entry in entries:
+        new_score = analyze_mood_sentiment(entry['mood'])
+        cursor.execute("UPDATE journal_entries SET sentiment_score = ? WHERE id = ?", (new_score, entry['id']))
+        updated_count += 1
+    
+    conn.commit()
+    conn.close()
+    
+    return {"message": f"Updated {updated_count} entries with sentiment scores"}
 
 @app.get("/")
 async def root():
-    return {"message": "InnerVoice API is running", "entries": len(journal_entries)}
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM journal_entries")
+    count = cursor.fetchone()[0]
+    conn.close()
+    
+    return {"message": "InnerVoice API is running with SQLite database", "entries": count}
 
 if __name__ == "__main__":
     import uvicorn
