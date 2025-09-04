@@ -8,72 +8,82 @@
   let recognition = null;
   let browserSupportsRecognition = false;
   let microphoneAvailable = true;
+  let interimText = '';
+  let finalText = '';
   
   console.log("VoiceInput component loaded!");
   
   onMount(() => {
     console.log("VoiceInput onMount called");
     
+    // Check if browser supports speech recognition
     if (typeof window !== 'undefined') {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       
+      console.log("SpeechRecognition support:", !!SpeechRecognition);
+      
       if (SpeechRecognition) {
         browserSupportsRecognition = true;
+        console.log("Speech recognition supported!");
         recognition = new SpeechRecognition();
         
         // Configure recognition
-        recognition.continuous = false; // Changed to false for better reliability
+        recognition.continuous = true;
         recognition.interimResults = true;
         recognition.lang = 'en-US';
-        recognition.maxAlternatives = 1;
         
-        // Handle results - FIXED VERSION
+        // Handle results
         recognition.onresult = (event) => {
-          let transcript = '';
+          let interim = '';
+          let final = '';
           
-          // Process all results and combine them
-          for (let i = 0; i < event.results.length; i++) {
-            transcript += event.results[i][0].transcript;
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            const result = event.results[i];
+            if (result.isFinal) {
+              final += result[0].transcript;
+            } else {
+              interim += result[0].transcript;
+            }
           }
           
-          console.log('Speech result:', transcript); // Debug log
+          interimText = interim;
+          finalText += final;
           
-          // Always send the full transcript
-          onTranscript(transcript);
-        };
-        
-        // Handle start
-        recognition.onstart = () => {
-          console.log('Speech recognition started');
-          isListening = true;
+          // Send combined text back to parent
+          if (final || interim) {
+            onTranscript(finalText + interim);
+          }
         };
         
         // Handle errors
         recognition.onerror = (event) => {
           console.error('Speech recognition error:', event.error);
-          if (event.error === 'not-allowed' || event.error === 'no-microphone') {
+          if (event.error === 'not-allowed') {
             microphoneAvailable = false;
           }
-          isListening = false;
+          stopListening();
         };
         
         // Handle end
         recognition.onend = () => {
-          console.log('Speech recognition ended');
           isListening = false;
         };
+      } else {
+        console.log("Speech recognition NOT supported");
       }
     }
+    
+    console.log("Final state:", { browserSupportsRecognition, microphoneAvailable });
   });
   
   function startListening() {
-    if (!recognition || isDisabled || !microphoneAvailable) return;
+    if (!recognition || isDisabled) return;
     
-    console.log('Starting speech recognition...');
+    finalText = '';
+    interimText = '';
+    isListening = true;
     
     try {
-      // Clear any previous transcript
-      onTranscript('');
       recognition.start();
     } catch (error) {
       console.error('Error starting recognition:', error);
@@ -84,7 +94,7 @@
   function stopListening() {
     if (!recognition) return;
     
-    console.log('Stopping speech recognition...');
+    isListening = false;
     recognition.stop();
   }
   
@@ -99,6 +109,11 @@
 
 <!-- Voice Input Button -->
 <div>
+  <!-- Debug info -->
+  <!-- <div style="font-size: 12px; color: gray;">
+    Debug: browserSupported={browserSupportsRecognition}, micAvailable={microphoneAvailable}
+  </div> -->
+  
   {#if browserSupportsRecognition && microphoneAvailable}
     <button
       on:click={toggleListening}
@@ -139,6 +154,7 @@
   {/if}
 </div>
 
+<!-- Same styles as before -->
 <style>
   .voice-button {
     width: 44px;
@@ -150,12 +166,12 @@
     justify-content: center;
     cursor: pointer;
     transition: all 0.2s ease-in-out;
-    background-color: #e5e7eb;
-    color: #6b7280;
+    background-color: #e5e7eb; /* gray-200 */
+    color: #6b7280; /* gray-500 */
   }
   
   .voice-button:hover:not(:disabled) {
-    background-color: #d1d5db;
+    background-color: #d1d5db; /* gray-300 */
     transform: scale(1.05);
   }
   
@@ -166,13 +182,13 @@
   }
   
   .voice-button.listening {
-    background-color: #ef4444;
+    background-color: #ef4444; /* red-500 */
     color: white;
     animation: pulse 2s infinite;
   }
   
   .voice-button.listening:hover {
-    background-color: #dc2626;
+    background-color: #dc2626; /* red-600 */
   }
   
   .voice-error {
@@ -183,8 +199,8 @@
     align-items: center;
     justify-content: center;
     flex-direction: column;
-    background-color: #fef2f2;
-    color: #dc2626;
+    background-color: #fef2f2; /* red-50 */
+    color: #dc2626; /* red-600 */
   }
   
   @keyframes pulse {

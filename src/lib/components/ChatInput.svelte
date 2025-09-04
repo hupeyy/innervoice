@@ -1,22 +1,30 @@
 <script>
+  import VoiceInput from './VoiceInput.svelte';  // Import your VoiceInput
+  import { createEventDispatcher } from 'svelte';
+
   export let message = '';
   export let isTyping = false;
-  export let onSendMessage;
-  export let onVoiceTranscript;
+
+  const dispatch = createEventDispatcher();
 
   function handleKeyDown(event) {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       if (message.trim() && !isTyping) {
-        onSendMessage();
+        handleSend();
       }
     }
   }
 
   function handleSend() {
     if (message.trim() && !isTyping) {
-      onSendMessage();
+      dispatch('send');
     }
+  }
+
+  // Handle voice transcript from your VoiceInput component
+  function handleVoiceTranscript(text) {
+    message = text; // Replace message with voice transcription
   }
 </script>
 
@@ -25,17 +33,24 @@
     <textarea
       bind:value={message}
       on:keydown={handleKeyDown}
-      placeholder="Share your thoughts..."
+      placeholder="Share your thoughts or speak into the microphone..."
       disabled={isTyping}
       rows="1"
       class="message-textarea"
     ></textarea>
+    
+    <!-- VoiceInput component -->
+    <VoiceInput 
+      onTranscript={handleVoiceTranscript}
+      isDisabled={isTyping}
+    />
     
     <button 
       class="send-button"
       on:click={handleSend}
       disabled={!message.trim() || isTyping}
       aria-label="Send message"
+      title="Send your message"
     >
       <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
         <path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/>

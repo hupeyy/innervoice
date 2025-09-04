@@ -427,7 +427,6 @@
               bind:message={newMessage}
               {isTyping}
               onSendMessage={sendMessage}
-              onVoiceTranscript={handleVoiceTranscript}
             />
           </div>
         </div>

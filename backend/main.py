@@ -645,9 +645,6 @@ async def get_all_journals():
         print(f"Error in get_all_journals: {e}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-@app.get("/api/journal/debug")
-async def debug_database():
-    print('HELLOOOOOOOOOOOOOOOOOOOOOO')
 
 @app.post("/api/journal/create")
 async def create_new_journal():
