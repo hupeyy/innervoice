@@ -8,7 +8,7 @@
   let moodBreakdown = {};
   let emotionalThemes = [];
   let averageSentiment = 0;
-  let moodStreak = 0;
+  let journalingStreak = 0; 
   
   // FIXED: Watch BOTH journalEntries AND selectedTimeframe
   $: if (journalEntries && selectedTimeframe) {
@@ -39,8 +39,8 @@
       ? sentimentData.reduce((sum, day) => sum + day.sentiment, 0) / sentimentData.length
       : 0;
     
-    // Calculate mood streak (consecutive positive days)
-    moodStreak = calculatePositiveStreak(sentimentData);
+    // Calculate journaling streak (consecutive days with entries)
+    journalingStreak = calculateJournalingStreak(journalEntries);
     
     // Extract emotional themes
     emotionalThemes = extractThemes(filteredEntries);
@@ -65,15 +65,46 @@
     return 'neutral';
   }
   
-  function calculatePositiveStreak(data) {
+  // NEW: Calculate consecutive journaling days
+  function calculateJournalingStreak(entries) {
+    if (!entries || entries.length === 0) return 0;
+    
+    // Sort entries by date (newest first)
+    const sortedEntries = [...entries].sort((a, b) => new Date(b.date) - new Date(a.date));
+    
+    // Group entries by date (remove time component)
+    const entriesByDate = {};
+    sortedEntries.forEach(entry => {
+      const dateKey = new Date(entry.date).toDateString();
+      entriesByDate[dateKey] = true;
+    });
+    
+    const uniqueDates = Object.keys(entriesByDate).sort((a, b) => new Date(b) - new Date(a));
+    
+    if (uniqueDates.length === 0) return 0;
+    
     let streak = 0;
-    for (let i = data.length - 1; i >= 0; i--) {
-      if (data[i].sentiment > 0) {
+    let currentDate = new Date();
+    
+    // Start from today and work backwards
+    for (let i = 0; i < 365; i++) { // Check up to 365 days back
+      const checkDate = new Date(currentDate);
+      checkDate.setDate(currentDate.getDate() - i);
+      const checkDateString = checkDate.toDateString();
+      
+      if (entriesByDate[checkDateString]) {
         streak++;
       } else {
-        break;
+        // If it's today and we haven't journaled yet, continue
+        // Otherwise, break the streak
+        if (i === 0 && checkDateString === new Date().toDateString()) {
+          continue;
+        } else {
+          break;
+        }
       }
     }
+    
     return streak;
   }
   
@@ -128,6 +159,7 @@
     selectedTimeframe = timeframe;
     console.log('New timeframe set:', selectedTimeframe);
   }
+
 </script>
 
 <div class="sentiment-dashboard">
@@ -178,10 +210,10 @@
       <div class="metric-card">
         <div class="metric-icon">🔥</div>
         <div class="metric-content">
-          <h3>Positive Streak</h3>
-          <p class="metric-value">{moodStreak} day{moodStreak !== 1 ? 's' : ''}</p>
+          <h3>Journaling Streak</h3>
+          <p class="metric-value">{journalingStreak} day{journalingStreak !== 1 ? 's' : ''}</p>
         </div>
-      </div>
+      </div> 
       
       <div class="metric-card">
         <div class="metric-icon">📝</div>

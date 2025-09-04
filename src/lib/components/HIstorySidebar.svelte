@@ -3,6 +3,7 @@
   
   export let isOpen = false;
   export let onClose = () => {};
+  export let journalEntries = []; // Add this prop for reactive updates
   
   let journals = [];
   let loading = false;
@@ -15,33 +16,52 @@
   let isEditingModalTitle = false;
   let editableModalTitle = '';
   
-  // ✅ CORRECTED timezone-aware date matching function
+  // Watch for changes in journalEntries prop - this updates the sidebar
+  $: if (journalEntries) {
+    journals = journalEntries;
+  }
+  
+  // Timezone-aware date matching function
   function dateMatchesEntry(entryDateString, selectedDateString) {
     if (!selectedDateString) return true;
     
-    // Create the selected date in local timezone (no UTC conversion)
     const selectedDate = new Date(selectedDateString + 'T00:00:00');
-    
-    // Parse the entry date (UTC timestamp)
     const entryDate = new Date(entryDateString);
     
-    // Get the date components in the user's local timezone
     const selectedYear = selectedDate.getFullYear();
     const selectedMonth = selectedDate.getMonth();
     const selectedDay = selectedDate.getDate();
     
-    // Get the entry date components in the user's local timezone
     const entryYear = entryDate.getFullYear();
     const entryMonth = entryDate.getMonth();  
     const entryDay = entryDate.getDate();
     
-    // Compare the date components
     return selectedYear === entryYear && 
            selectedMonth === entryMonth && 
            selectedDay === entryDay;
   }
   
-  // ✅ CORRECTED display date (no timezone offset issues)
+  // Group journals by date for display
+  function groupJournalsByDate(journals) {
+    const grouped = {};
+    
+    journals.forEach(journal => {
+      const date = new Date(journal.date).toDateString();
+      if (!grouped[date]) {
+        grouped[date] = [];
+      }
+      grouped[date].push(journal);
+    });
+    
+    // Sort entries within each day by time (newest first)
+    Object.keys(grouped).forEach(date => {
+      grouped[date].sort((a, b) => new Date(b.date) - new Date(a.date));
+    });
+    
+    return grouped;
+  }
+  
+  // Display date for search
   $: displaySearchDate = searchDate ? new Date(searchDate + 'T00:00:00').toLocaleDateString('en-US', {
     weekday: 'short',
     month: 'short',
@@ -49,14 +69,12 @@
     year: 'numeric'
   }) : '';
   
-  // Enhanced filtering with corrected timezone-aware date matching
+  // Enhanced filtering with timezone-aware date matching
   $: filteredJournals = journals.filter(entry => {
-    // Date filtering with timezone handling
     if (searchDate && !dateMatchesEntry(entry.date, searchDate)) {
       return false;
     }
     
-    // Text filtering (existing logic)
     if (!searchQuery) return true;
     
     const query = searchQuery.toLowerCase();
@@ -66,16 +84,46 @@
     return entryTitle.includes(query) || entrySummary.includes(query);
   });
   
+  // Group filtered journals by date
+  $: groupedJournals = groupJournalsByDate(filteredJournals);
+  
+  // Get today's entries for display
+  $: todaysEntries = journals.filter(journal => {
+    const today = new Date().toDateString();
+    const journalDate = new Date(journal.date).toDateString();
+    return today === journalDate;
+  });
+  
+  // Fallback fetch function - only called if no entries provided via props
   async function fetchJournalHistory() {
-    if (!isOpen || journals.length > 0) return;
+    if (!isOpen || journalEntries.length > 0) return;
     
     loading = true;
     try {
-      const response = await fetch('http://localhost:8000/api/journal/all');
-      if (response.ok) {
-        const data = await response.json();
-        journals = data.journals || [];
+      console.log('Fetching journal history from:', 'http://localhost:8000/api/journal/all');
+      
+      const response = await fetch('http://localhost:8000/api/journal/all', {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
+      
+      const data = await response.json();
+      
+      if (data && data.journals) {
+        journals = data.journals;
+        console.log('Loaded journals:', journals.length);
+      } else {
+        console.warn('No journals found in response');
+        journals = [];
+      }
+      
     } catch (error) {
       console.error('Error fetching journal history:', error);
     } finally {
@@ -83,10 +131,56 @@
     }
   }
   
+  // Create new blank entry
+  async function createNewEntry() {
+    try {
+      const response = await fetch('http://localhost:8000/api/journal/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        journals = [data.journal, ...journals];
+        openEntryModal(data.journal);
+      }
+    } catch (error) {
+      console.error('Error creating new entry:', error);
+    }
+  }
+  
+  // Delete entry
+  async function deleteEntry(entryId) {
+    if (!entryId) {
+      console.error('Cannot delete entry: ID is undefined', entryId);
+      return;
+    }
+    
+    if (!confirm('Are you sure you want to delete this journal entry?')) return;
+    
+    try {
+      const response = await fetch(`http://localhost:8000/api/journal/${entryId}`, {
+        method: 'DELETE'
+      });
+      
+      if (response.ok) {
+        journals = journals.filter(journal => journal.id !== entryId);
+        if (selectedEntry && selectedEntry.id === entryId) {
+          closeModal();
+        }
+        console.log('Entry deleted successfully');
+      } else {
+        console.error('Failed to delete entry:', await response.text());
+      }
+    } catch (error) {
+      console.error('Error deleting entry:', error);
+    }
+  }
+  
   function formatDate(dateString) {
     return new Date(dateString).toLocaleDateString('en-US', {
-      weekday: 'short',
-      month: 'short',
+      weekday: 'long',
+      month: 'long',
       day: 'numeric',
       year: 'numeric'
     });
@@ -94,8 +188,9 @@
   
   function formatTime(dateString) {
     return new Date(dateString).toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit'
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
     });
   }
   
@@ -141,33 +236,27 @@
     if (!selectedEntry) return;
     
     try {
-      const journalDate = new Date(selectedEntry.date).toISOString().split('T')[0];
-      
-      const response = await fetch(`http://localhost:8000/api/journal/${journalDate}/title`, {
+      const response = await fetch(`http://localhost:8000/api/journal/${selectedEntry.id}/title`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: editableModalTitle.trim() })
       });
       
       if (response.ok) {
-        // Update the entry in the journals array
-        const journalIndex = journals.findIndex(j => j.date === selectedEntry.date);
+        const journalIndex = journals.findIndex(j => j.id === selectedEntry.id);
         if (journalIndex !== -1) {
           journals[journalIndex] = { ...journals[journalIndex], title: editableModalTitle.trim() };
-          journals = [...journals]; // Trigger reactivity
+          journals = [...journals];
         }
         
-        // Update the selectedEntry
         selectedEntry = { ...selectedEntry, title: editableModalTitle.trim() };
         console.log('Modal title updated successfully');
       } else {
         console.error('Failed to update modal title:', await response.text());
-        // Revert on failure
         editableModalTitle = selectedEntry.title || '';
       }
     } catch (error) {
       console.error('Error updating modal title:', error);
-      // Revert on failure
       editableModalTitle = selectedEntry.title || '';
     }
     
@@ -189,18 +278,29 @@
     saveModalTitle();
   }
   
-  // Fetch history when sidebar opens
-  $: if (isOpen) {
+  // Fetch history when sidebar opens (only if no entries provided)
+  $: if (isOpen && journalEntries.length === 0) {
     fetchJournalHistory();
   }
 </script>
 
 {#if isOpen}
   <div class="sidebar-backdrop" on:click={onClose} on:keydown={(e) => e.key === 'Escape' && onClose()} role="button" tabindex="0">
-    <div class="sidebar" on:click|stopPropagation on:keydown|stopPropagation role="dialog" aria-modal="true" tabindex="-1">
+    <div class="sidebar" on:click|stopPropagation on:keydown|stopPropagation role="dialog" aria-modal="true" aria-labelledby="sidebar-title" tabindex="-1">
       <div class="sidebar-header">
         <h2 class="text-lg font-semibold text-indigo-800">Journal History</h2>
         <button on:click={onClose} class="close-button">×</button>
+      </div>
+      
+      <!-- Journal Actions -->
+      <div class="journal-actions">
+        <button class="new-entry-btn" on:click={createNewEntry}>
+          ✏️ New Entry
+        </button>
+        
+        {#if todaysEntries.length > 0}
+          <span class="today-count">{todaysEntries.length} entries today</span>
+        {/if}
       </div>
       
       <!-- Enhanced Search Section with Date Filter -->
@@ -236,7 +336,7 @@
       <div class="sidebar-content">
         {#if loading}
           <div class="loading">Loading your journals...</div>
-        {:else if filteredJournals.length === 0}
+        {:else if Object.keys(groupedJournals).length === 0}
           <div class="empty-state">
             {#if searchQuery || searchDate}
               <div class="text-4xl mb-2">🔍</div>
@@ -269,32 +369,50 @@
             {:else}
               <div class="text-4xl mb-2">📖</div>
               <p class="text-gray-600">No journal entries yet</p>
+              <button class="start-journaling-btn" on:click={createNewEntry}>
+                Start your first entry
+              </button>
             {/if}
           </div>
         {:else}
           <div class="journal-list">
-            {#each filteredJournals as entry}
-              <div 
-                class="journal-entry-card" 
-                on:click={() => openEntryModal(entry)}
-                role="button"
-                tabindex="0"
-                on:keydown={(e) => e.key === 'Enter' && openEntryModal(entry)}
-              >
-                <div class="entry-header">
-                  <div class="entry-date">{formatDate(entry.date)}</div>
-                  <div class="entry-time">{formatTime(entry.date)}</div>
+            {#each Object.entries(groupedJournals) as [date, entries]}
+              <div class="date-group">
+                <div class="date-header">
+                  <h3>{formatDate(date)}</h3>
+                  <span class="entry-count">{entries.length} {entries.length === 1 ? 'entry' : 'entries'}</span>
                 </div>
-                <div class="entry-title">{entry.title || 'Daily Reflection'}</div>
-                <div class="entry-summary">{truncateText(entry.summary)}</div>
-                <div class="entry-insights">
-                  {#if entry.insights && entry.insights.length > 0}
-                    <div class="insight-preview">💡 {truncateText(entry.insights[0], 60)}</div>
-                  {/if}
-                </div>
-                {#if entry.mood}
-                  <div class="entry-mood">Mood: {entry.mood}</div>
-                {/if}
+                
+                {#each entries as entry}
+                  <div 
+                    class="journal-entry-card" 
+                    on:click={() => openEntryModal(entry)}
+                    role="button"
+                    tabindex="0"
+                    on:keydown={(e) => e.key === 'Enter' && openEntryModal(entry)}
+                  >
+                    <div class="entry-header">
+                      <div class="entry-time">{formatTime(entry.date)}</div>
+                      <div class="entry-sentiment">
+                        {entry.sentimentScore > 0.2 ? '😊' : entry.sentimentScore < -0.2 ? '😔' : '😐'}
+                      </div>
+                      <button 
+                        on:click|stopPropagation={() => deleteEntry(entry.id)}
+                        title="Delete entry"
+                        disabled={!entry.id}
+                      >
+                        🗑️
+                      </button> 
+                    </div>
+                    <div class="entry-title">{entry.title || 'Untitled Entry'}</div>
+                    <div class="entry-summary">{truncateText(entry.summary)}</div>
+                    <div class="entry-insights">
+                      {#if entry.insights && entry.insights.length > 0}
+                        <div class="insight-preview">💡 {truncateText(entry.insights[0], 60)}</div>
+                      {/if}
+                    </div>
+                  </div>
+                {/each}
               </div>
             {/each}
           </div>
@@ -306,10 +424,9 @@
 
 <!-- Journal Entry Modal with Editable Title -->
 {#if showModal && selectedEntry}
-  <div class="modal-backdrop" on:click={handleModalBackdropClick} on:keydown={(e) => e.key === 'Escape' && closeModal()} role="dialog" aria-modal="true" tabindex="-1">
-    <div class="modal" role="document">
+  <div class="modal-backdrop" on:click={handleModalBackdropClick}>
+    <div class="modal" on:click|stopPropagation>
       <div class="modal-header">
-        <!-- Editable Title in Modal -->
         <div class="modal-title-container">
           {#if isEditingModalTitle}
             <input
@@ -321,14 +438,16 @@
               placeholder="Enter journal title..."
             />
           {:else}
-            <button 
+            <h2 
               class="modal-title-editable" 
               on:click={startEditingModalTitle}
+              role="button"
+              tabindex="0"
               on:keydown={(e) => e.key === 'Enter' && startEditingModalTitle()}
             >
               {selectedEntry.title || 'Untitled Entry'}
               <span class="modal-edit-icon">✏️</span>
-            </button>
+            </h2>
           {/if}
         </div>
         <button on:click={closeModal} class="modal-close-button">×</button>
@@ -432,6 +551,37 @@
     background: #e5e7eb;
   }
   
+  /* Journal actions */
+  .journal-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem;
+    border-bottom: 1px solid #e5e7eb;
+  }
+  
+  .new-entry-btn {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    padding: 0.75rem 1.5rem;
+    border-radius: 25px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: all 0.2s ease;
+    font-size: 0.875rem;
+  }
+  
+  .new-entry-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
+  }
+  
+  .today-count {
+    font-size: 0.875rem;
+    color: #6b7280;
+  }
+  
   /* Enhanced search section */
   .search-section {
     padding: 1rem;
@@ -521,6 +671,22 @@
     padding: 3rem 1rem;
   }
   
+  .start-journaling-btn {
+    margin-top: 1rem;
+    padding: 0.75rem 1.5rem;
+    background: #6366f1;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: background 0.2s;
+  }
+  
+  .start-journaling-btn:hover {
+    background: #4f46e5;
+  }
+  
   .filter-actions {
     display: flex;
     gap: 0.5rem;
@@ -546,7 +712,34 @@
   .journal-list {
     display: flex;
     flex-direction: column;
-    gap: 1rem;
+    gap: 1.5rem;
+  }
+  
+  /* Date grouping */
+  .date-group {
+    margin-bottom: 1.5rem;
+  }
+  
+  .date-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    background: rgba(99, 102, 241, 0.1);
+    border-radius: 8px;
+    margin-bottom: 0.75rem;
+  }
+  
+  .date-header h3 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 0;
+    color: #4f46e5;
+  }
+  
+  .entry-count {
+    font-size: 0.875rem;
+    color: #6b7280;
   }
   
   .journal-entry-card {
@@ -556,6 +749,7 @@
     padding: 1rem;
     cursor: pointer;
     transition: all 0.2s;
+    margin-bottom: 0.5rem;
   }
   
   .journal-entry-card:hover {
@@ -572,15 +766,28 @@
     margin-bottom: 0.5rem;
   }
   
-  .entry-date {
+  .entry-time {
     font-size: 0.75rem;
     color: #6366f1;
     font-weight: 500;
   }
   
-  .entry-time {
-    font-size: 0.75rem;
-    color: #9ca3af;
+  .entry-sentiment {
+    font-size: 1rem;
+  }
+  
+  .delete-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0.25rem;
+    opacity: 0.6;
+    transition: opacity 0.2s;
+    font-size: 0.875rem;
+  }
+  
+  .delete-btn:hover {
+    opacity: 1;
   }
   
   .entry-title {
@@ -600,13 +807,6 @@
     font-size: 0.75rem;
     color: #7c3aed;
     font-style: italic;
-    margin-bottom: 0.25rem;
-  }
-  
-  .entry-mood {
-    font-size: 0.75rem;
-    color: #059669;
-    font-weight: 500;
   }
   
   /* Modal Styles */
@@ -797,7 +997,7 @@
     font-style: italic;
   }
   
-  /* Utility classes for text styling */
+  /* Utility classes */
   .text-4xl {
     font-size: 2.25rem;
   }

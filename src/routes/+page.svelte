@@ -21,6 +21,11 @@
   let showStarterOptions = false;
   let starterOptions = [];
   let allJournals = []; // For sentiment dashboard
+  let allJournalsForSidebar = []; // For history sidebar
+  let saveInProgress = false;
+  let lastSaveTimestamp = 0;
+  let beforeUnloadExecuted = false;
+  let lastSaveRequest = null;
 
   async function handleTitleChange(newTitle) {
     if (!journal) return;
@@ -46,11 +51,120 @@
     }
   }
 
+  function hasUserInteractions() {
+    return messages.some(msg => msg.sender === 'user');
+  }
+
+  // Shared save function with better duplicate prevention
+  async function saveCurrentSession(source = 'manual') {
+    if (!hasUserInteractions()) {
+      console.log('No interactions to save');
+      return null;
+    }
+
+    if (saveInProgress) {
+      console.log(`Save already in progress, skipping ${source} save`);
+      return null;
+    }
+
+    // Stronger deduplication - check if we just made this exact same request
+    const requestKey = `${source}-${Date.now()}`;
+    if (lastSaveRequest && Date.now() - lastSaveRequest < 3000) {
+      console.log(`Duplicate save request blocked: ${requestKey}`);
+      return null;
+    }
+
+    saveInProgress = true;
+    lastSaveRequest = Date.now();
+    console.log(`Starting ${source} save: ${requestKey}`);
+
+    try {
+      const response = await fetch('http://localhost:8000/api/journal/save-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log(`${source} save successful:`, data.journal.title);
+        lastSaveTimestamp = Date.now();
+        
+        // Refresh journal data
+        await loadHistoricalJournals();
+        
+        return data;
+      } else {
+        console.error(`${source} save failed:`, await response.text());
+        return null;
+      }
+    } catch (error) {
+      console.error(`Error during ${source} save:`, error);
+      return null;
+    } finally {
+      saveInProgress = false;
+    }
+  }
+
+  // Improved beforeunload handler
+  async function handleBeforeUnload() {
+    if (beforeUnloadExecuted) {
+      console.log('beforeunload already executed, skipping');
+      return;
+    }
+    
+    beforeUnloadExecuted = true;
+    console.log('Executing beforeunload save...');
+    
+    await saveCurrentSession('auto');
+    
+    // Reset flag after longer delay
+    setTimeout(() => {
+      beforeUnloadExecuted = false;
+    }, 5000);
+  }
+
+  // Simplified handleNewEntry
+  async function handleNewEntry() {
+    try {
+      isTyping = true;
+      const savedData = await saveCurrentSession('manual');
+      
+      if (savedData) {
+        // Clear current session
+        clearCurrentSession();
+        await loadDynamicStarter();
+        await loadHistoricalJournals();
+        console.log('New session started!');
+      } else if (!hasUserInteractions()) {
+        clearCurrentSession();
+        await loadDynamicStarter();
+      }
+    } finally {
+      isTyping = false;
+    }
+  }
+
+  // Clear current chat session
+  function clearCurrentSession() {
+    messages = [];
+    newMessage = '';
+    journal = null;
+    userNotes = '';
+    showStarterOptions = false;
+  }
+
   // Dynamic starter functionality
   onMount(async () => {
     await loadDynamicStarter();
     await loadHistoricalJournals();
-  });
+    
+    // Add auto-save listener
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }); 
 
   async function loadDynamicStarter() {
     try {
@@ -95,8 +209,10 @@
     try {
       const response = await fetch('http://localhost:8000/api/journal/all');
       if (response.ok) {
-        const data = await response.json();
+        const data = await response.json(); // Read once
+        console.log('Fetched journal history:', data); // Log the data variable
         allJournals = data.journals || [];
+        allJournalsForSidebar = data.journals || [];
       }
     } catch (error) {
       console.error('Error loading historical journals:', error);
@@ -284,6 +400,17 @@
               {encryptionEnabled} 
             />
             
+            <!-- NEW: Add session actions -->
+            {#if messages.length > 0}
+              <div class="session-actions">
+                {#if hasUserInteractions()}
+                  <button class="new-session-btn" on:click={handleNewEntry}>
+                    💾 Save & Start New Session
+                  </button>
+                {/if}
+              </div>
+            {/if}
+            
             <!-- Show "More options" button for initial AI message -->
             {#if messages.length === 1 && messages[0].sender === 'ai' && !showStarterOptions}
               <div class="more-starters-container">
@@ -348,6 +475,7 @@
   <HistorySidebar 
     isOpen={showHistory} 
     onClose={handleCloseHistory}
+    journalEntries={allJournalsForSidebar}
   />
 
   <!-- Starter Options Modal -->
@@ -685,6 +813,49 @@
   }
 
   .more-starters-btn:hover {
+    background: rgba(255, 255, 255, 1);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+  }
+
+  .session-actions {
+    display: flex;
+    justify-content: center;
+    padding: 1rem;
+    margin: 1rem 0;
+  }
+
+  .new-session-btn {
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+    color: white;
+    border: none;
+    padding: 0.75rem 1.5rem;
+    border-radius: 25px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: all 0.2s ease;
+    font-size: 0.875rem;
+  }
+
+  .new-session-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(16, 185, 129, 0.4);
+  }
+
+  .clear-btn {
+    background: rgba(255, 255, 255, 0.9);
+    color: #6b7280;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    padding: 0.75rem 1.5rem;
+    border-radius: 25px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: all 0.2s ease;
+    font-size: 0.875rem;
+    backdrop-filter: blur(10px);
+  }
+
+  .clear-btn:hover {
     background: rgba(255, 255, 255, 1);
     transform: translateY(-2px);
     box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);

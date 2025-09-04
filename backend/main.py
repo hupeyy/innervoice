@@ -501,35 +501,53 @@ Always maintain a warm, nonjudgmental, human-like conversational tone."""
 
 @app.post("/api/journal/generate")
 async def generate_journal():
-    """Generate journal with improved memory extraction, title, and sentiment analysis"""
+    """Generate journal preview without saving to database"""
+    
+    # Get messages from global conversations variable
+    global conversations
+    
+    if not conversations:
+        raise HTTPException(status_code=400, detail="No session to generate journal")
     
     user_messages = [msg for msg in conversations if msg["sender"] == "user"]
     if not user_messages:
-        return {"journal": None}
+        raise HTTPException(status_code=400, detail="No user messages to generate journal")
 
-    # Build conversation text
+    # Build conversation text for analysis
     conversation_text = "\n".join([
         f"{'User' if msg['sender'] == 'user' else 'InnerVoice'}: {msg['text']}" 
         for msg in conversations
     ])
 
-    # Generate summary
+    # Generate summary (reuse existing logic)
     try:
-        summary_prompt = f"""Create a warm, empathetic summary of this journaling conversation in 2-3 sentences. 
-        Focus on the user's main feelings, experiences, and any specific events, people, or goals they mentioned:
+        summary_prompt = f"""You are a compassionate journaling assistant. Write a warm, personal journal entry in the first person, as if the user is reflecting in their own private journal.
 
-{conversation_text}"""
+    Use gentle, introspective language with phrases like:
+    - "I noticed..."
+    - "I felt..." 
+    - "Today I realized..."
+    - "I'm grateful for..."
+    - "I'm curious about..."
+    - "Something that struck me was..."
+
+    Avoid clinical or analytical language. Write as the user's own voice, capturing meaningful insights and emotions from our conversation.
+
+    Our conversation:
+    {conversation_text}
+
+    Write a 2-3 sentence personal journal reflection:"""
 
         summary_response = openai.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": summary_prompt}],
             max_tokens=120,
-            temperature=0.7,
+            temperature=0.8,  # Higher for more natural, personal voice
         )
         summary = summary_response.choices[0].message.content.strip()
     except Exception as e:
-        summary = "Reflected on current thoughts and feelings in today's conversation."
-
+        summary = "I'm grateful for this time I took to reflect on what's been on my mind. There's something valuable about pausing to explore my thoughts and feelings in this space."
+    
     # Generate insights
     try:
         memory_context = build_memory_context()
@@ -563,22 +581,210 @@ async def generate_journal():
     user_text = " ".join([msg["text"] for msg in user_messages])
     sentiment_score, primary_theme = await analyze_sentiment(user_text)
 
-    # Create journal entry in database
+    # Get current time for preview
     now = datetime.now()
+    
+    # Return preview data WITHOUT saving to database
+    return {
+        "journal": {
+            "date": now.isoformat(),
+            "title": f"Journal Entry - {now.strftime('%B %d, %Y')}",
+            "summary": summary,
+            "insights": insights,
+            "sentimentScore": sentiment_score,
+            "primaryTheme": primary_theme,
+            "messages": [
+                {
+                    "role": msg["sender"],
+                    "text": msg["text"],
+                    "timestamp": msg["timestamp"]
+                } for msg in conversations
+            ],
+            "userNotes": "",
+            "mood": "Reflective"
+        }
+    }
+
+@app.get("/api/journal/all")
+async def get_all_journals():
+    """Get all journal entries for the user"""
+    try:
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id, date, title, summary, insights, sentiment_score, 
+                   primary_theme, messages, user_notes, mood
+            FROM journal_entries 
+            ORDER BY date DESC
+        """)
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        journals = []
+        for row in rows:
+            journal_entry = {
+                "id": row["id"],
+                "date": row["date"],
+                "title": row["title"],
+                "summary": row["summary"],
+                "insights": json.loads(row["insights"]) if row["insights"] else [],
+                "sentimentScore": row["sentiment_score"],
+                "primaryTheme": row["primary_theme"],
+                "messages": json.loads(row["messages"]) if row["messages"] else [],
+                "userNotes": row["user_notes"],
+                "mood": row["mood"]
+            }
+            journals.append(journal_entry)
+        
+        return {"journals": journals}
+        
+    except Exception as e:
+        print(f"Error in get_all_journals: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@app.get("/api/journal/debug")
+async def debug_database():
+    print('HELLOOOOOOOOOOOOOOOOOOOOOO')
+
+@app.post("/api/journal/create")
+async def create_new_journal():
+    """Create a new blank journal entry for today"""
+    now = datetime.now()
+    
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Remove existing entry for today if it exists
-    today_date = now.strftime("%Y-%m-%d")
-    cursor.execute("DELETE FROM journal_entries WHERE date LIKE ?", (f"{today_date}%",))
-    
-    # Insert new entry
     cursor.execute('''
     INSERT INTO journal_entries (date, title, summary, insights, sentiment_score, primary_theme, messages, user_notes, mood)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         now.isoformat(),
-        f"Journal Entry - {now.strftime('%B %d, %Y')}",
+        f"New Entry - {now.strftime('%I:%M %p')}",
+        "Start writing your thoughts here...",
+        json.dumps(["Ready to explore your inner world."]),
+        0.0,
+        "Daily Life",
+        json.dumps([]),
+        "",
+        "Curious"
+    ))
+    
+    entry_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    
+    return {
+        "journal": {
+            "id": entry_id,
+            "date": now.isoformat(),
+            "title": f"New Entry - {now.strftime('%I:%M %p')}",
+            "summary": "Start writing your thoughts here...",
+            "insights": ["Ready to explore your inner world."],
+            "sentimentScore": 0.0,
+            "primaryTheme": "Daily Life",
+            "messages": [],
+            "userNotes": "",
+            "mood": "Curious"
+        }
+    }
+
+@app.post("/api/journal/save-session")
+async def save_current_session():
+    """Save current chat session as a new journal entry"""
+    
+    # Get messages from global conversations variable
+    global conversations
+    
+    if not conversations:
+        raise HTTPException(status_code=400, detail="No session to save")
+    
+    user_messages = [msg for msg in conversations if msg["sender"] == "user"]
+    if not user_messages:
+        raise HTTPException(status_code=400, detail="No user messages to save")
+
+    # Build conversation text for analysis
+    conversation_text = "\n".join([
+        f"{'User' if msg['sender'] == 'user' else 'InnerVoice'}: {msg['text']}" 
+        for msg in conversations
+    ])
+
+    # Generate summary (reuse existing logic)
+    try:
+        summary_prompt = f"""You are a compassionate journaling assistant. Write a warm, personal journal entry in the first person, as if the user is reflecting in their own private journal.
+
+    Use gentle, introspective language with phrases like:
+    - "I noticed..."
+    - "I felt..." 
+    - "Today I realized..."
+    - "I'm grateful for..."
+    - "I'm curious about..."
+    - "Something that struck me was..."
+
+    Avoid clinical or analytical language. Write as the user's own voice, capturing meaningful insights and emotions from our conversation.
+
+    Our conversation:
+    {conversation_text}
+
+    Write a 2-3 sentence personal journal reflection:"""
+
+        summary_response = openai.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": summary_prompt}],
+            max_tokens=120,
+            temperature=0.8,  # Higher for more natural, personal voice
+        )
+        summary = summary_response.choices[0].message.content.strip()
+    except Exception as e:
+        summary = "I'm grateful for this time I took to reflect on what's been on my mind. There's something valuable about pausing to explore my thoughts and feelings in this space."
+
+    
+    # Generate insights
+    try:
+        memory_context = build_memory_context()
+        insights_prompt = f"""{memory_context}Based on this conversation, provide 2-3 supportive insights or gentle suggestions for growth. 
+        Consider any patterns or connections to previous conversations. Format as separate bullet points:
+
+{conversation_text}"""
+
+        insights_response = openai.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": insights_prompt}],
+            max_tokens=150,
+            temperature=0.7,
+        )
+        insights_text = insights_response.choices[0].message.content.strip()
+        
+        # Parse insights
+        insights = []
+        for line in insights_text.split('\n'):
+            cleaned = line.strip().lstrip('•-*').strip()
+            if cleaned and len(cleaned) > 15:
+                insights.append(cleaned)
+        
+        if not insights:
+            insights = ["Taking time for self-reflection supports personal growth and emotional well-being."]
+            
+    except Exception:
+        insights = ["Regular journaling helps process emotions and gain valuable perspective."]
+
+    # Enhanced sentiment analysis
+    user_text = " ".join([msg["text"] for msg in user_messages])
+    sentiment_score, primary_theme = await analyze_sentiment(user_text)
+
+    # Save to database
+    now = datetime.now()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+    INSERT INTO journal_entries (date, title, summary, insights, sentiment_score, primary_theme, messages, user_notes, mood)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        now.isoformat(),
+        f"Session - {now.strftime('%I:%M %p')}", # Time-based title to avoid conflicts
         summary,
         json.dumps(insights),
         sentiment_score,
@@ -598,10 +804,14 @@ async def generate_journal():
     conn.commit()
     conn.close()
 
+    # Clear the global conversations after saving
+    conversations = []
+    print("hello is this working")
     return {
         "journal": {
+            "id": entry_id,
             "date": now.isoformat(),
-            "title": f"Journal Entry - {now.strftime('%B %d, %Y')}",
+            "title": f"Session - {now.strftime('%I:%M %p')}",
             "summary": summary,
             "insights": insights,
             "sentimentScore": sentiment_score,
@@ -611,7 +821,7 @@ async def generate_journal():
                     "role": msg["sender"],
                     "text": msg["text"],
                     "timestamp": msg["timestamp"]
-                } for msg in conversations
+                } for msg in conversations  # Note: This will be empty since we cleared it above
             ],
             "userNotes": "",
             "mood": "Reflective"
@@ -639,32 +849,6 @@ async def update_journal_title(journal_date: str, request_data: dict):
     conn.close()
     
     return {"message": "Title updated successfully", "title": new_title}
-
-@app.get("/api/journal/all")
-async def get_all_journals():
-    """Return all journal entries for history sidebar and sentiment analysis"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT * FROM journal_entries ORDER BY date DESC")
-    entries = cursor.fetchall()
-    conn.close()
-    
-    journals = []
-    for entry in entries:
-        journals.append({
-            "date": entry['date'],
-            "title": entry['title'],
-            "summary": entry['summary'],
-            "insights": json.loads(entry['insights']),
-            "sentimentScore": entry['sentiment_score'],
-            "primaryTheme": entry['primary_theme'],
-            "messages": json.loads(entry['messages']),
-            "userNotes": entry['user_notes'],
-            "mood": entry['mood']
-        })
-    
-    return {"journals": journals}
 
 @app.get("/api/journal/{date}")
 async def get_journal_by_date(date: str):
@@ -730,6 +914,23 @@ async def backfill_sentiment():
     conn.close()
     
     return {"message": f"Updated {updated_count} entries with sentiment scores"}
+
+@app.delete("/api/journal/{entry_id}")
+async def delete_journal_entry(entry_id: int):
+    """Delete a specific journal entry"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("DELETE FROM journal_entries WHERE id = ?", (entry_id,))
+    
+    if cursor.rowcount == 0:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Journal entry not found")
+    
+    conn.commit()
+    conn.close()
+    
+    return {"message": "Journal entry deleted successfully"}
 
 @app.get("/")
 async def root():

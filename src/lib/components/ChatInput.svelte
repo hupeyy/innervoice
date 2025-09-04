@@ -35,6 +35,7 @@
       class="send-button"
       on:click={handleSend}
       disabled={!message.trim() || isTyping}
+      aria-label="Send message"
     >
       <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
         <path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/>
@@ -73,6 +74,7 @@
     max-height: 120px;
     font-family: inherit;
     transition: all 0.2s ease;
+    overflow: hidden;
   }
 
   .message-textarea:focus {
