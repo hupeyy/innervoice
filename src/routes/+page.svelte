@@ -426,7 +426,7 @@
             <ChatInput 
               bind:message={newMessage}
               {isTyping}
-              onSendMessage={sendMessage}
+              on:send={sendMessage}
             />
           </div>
         </div>
